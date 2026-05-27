@@ -50,8 +50,7 @@ ZPT8 includes a powerful automation tool `png2pc8c.py` that streamlines the proc
 
 ### Prerequisites
 1. **Python 3.x** installed on your host system.
-2. **shrinko8**: The popular PICO-8 code optimizer (`shrinko8.py` or `shrinko8.exe`).
-3. **pc8_compile**: The native compiler tool for your binary layout.
+2. [**shrinko8**](https://github.com/thisismypassport/shrinko8): The popular PICO-8 code optimizer (`shrinko8.py` or `shrinko8.exe`). 
 
 Put either `shrinko8` or `pc8_compile` inside a `tools/` folder under your script directory, or keep them in the same folder as `png2pc8c.py`. The script will automatically auto-detect them.
 
