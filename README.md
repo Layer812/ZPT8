@@ -90,29 +90,6 @@ The physical keyboard and side keys of the M5Cardputer are bound to PICO-8 Playe
 
 ---
 
-## 🚀 Source Build Guide (Alternative)
-
-If you wish to compile the firmware from scratch, the main project is configured using **PlatformIO**.
-
-### 1. Production `platformio.ini` Example
-```ini
-[env:m5stack-stamps3]
-platform = espressif32
-board = m5stack-stamps3
-framework = arduino
-monitor_speed = 115200
-build_flags = 
-    -Os
-    -DCORE_DEBUG_LEVEL=0
-```
-
-### 2. Deployment Shortcuts
-Disconnect any existing serial connections, then invoke the following PlatformIO keybinds:
-* **Build & Flash Binary**: `Ctrl + U` (or `pio run --target upload`)
-* **Launch Device Diagnostics Monitor**: `Ctrl + Alt + M` (or `pio device monitor`)
-
----
-
 ## 🔧 Troubleshooting
 
 #### Q. Cartridge loads but the screen stays frozen or black.
