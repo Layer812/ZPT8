@@ -82,7 +82,6 @@ A. Double check `src/pico8/vm.cpp`. Ensure the `vm::vm()` constructor explicitly
 
 ## 📜 License & Acknowledgments
 
-* **ZPT8 Engine & Hardware Abstraction Layer**: MIT License.
 * **Zepto-8 Core**: Copyright © 2016–2024 Sam Hocevar (Do What the Fuck You Want to Public License - WTFPL).
 * **z8lua Extension**: Customized Lua 5.2 Embedded Subsystem.
 * **Jelpi Sample Asset**: `jelpi.pc8c` is an optimized conversion of "Jelpi Adventures", an official demo cartridge originally created by Lexaloffle Games, provided purely for hardware and performance verification purposes.
