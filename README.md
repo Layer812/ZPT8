@@ -45,29 +45,10 @@ SD Card Root/
 ---
 
 ## 🛠️ How to Compile Cartridges (`.p8.png` ➔ `.pc8c`)
+ZPT8 runs highly optimized .pc8c format cartridges from the SD card.
+The compiler tool chain (including python scripts and binaries to convert .p8.png to .pc8c) is currently being prepared and will be released on GitHub soon!
 
-ZPT8 includes a powerful automation tool `png2pc8c.py` that streamlines the process of shrinking your original PICO-8 PNG cartridges and packing them into the optimized `.pc8c` format using `shrinko8`.
-
-### Prerequisites
-1. **Python 3.x** installed on your host system.
-2. [**shrinko8**](https://github.com/thisismypassport/shrinko8): The popular PICO-8 code optimizer (`shrinko8.py` or `shrinko8.exe`). 
-
-Put `shrinko8` inside a `tools/` folder under your script directory, or keep them in the same folder as `png2pc8c.py`. The script will automatically auto-detect them.
-
-### Usage
-Run the script from your terminal, passing the target `.p8.png` cartridge file as the argument:
-
-```bash
-python png2pc8c.py <input.p8.png> [output.pc8c]
-
-# Example: Converted to 31991.pc8c automatically
-python png2pc8c.py 31991.p8.png
-```
-
-### What the Script Does Under the Hood:
-1. **Minification**: Invokes `shrinko8` to safely strip comments, eliminate whitespace, and compress the Lua code to its minimal textual token layout.
-2. **Binary Synthesis**: Pipes the minified source into `pc8_compile` to wrap graphic banks, sound/music definitions, and code segments into the high-speed structural `.pc8c` output file.
-3. **Clean Up**: Safely purges temporary script components from the workspace once generation completes successfully.
+For now, please enjoy the pre-installed system and default verification games (jelpi).
 
 ---
 
