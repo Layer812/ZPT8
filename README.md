@@ -46,13 +46,13 @@ SD Card Root/
 
 ## 🛠️ How to Compile Cartridges (`.p8.png` ➔ `.pc8c`)
 
-ZPT8 includes a powerful automation tool `png2pc8c.py` that streamlines the process of shrinking your original PICO-8 PNG cartridges and packing them into the optimized `.pc8c` format using `shrinko8` and `pc8_compile`.
+ZPT8 includes a powerful automation tool `png2pc8c.py` that streamlines the process of shrinking your original PICO-8 PNG cartridges and packing them into the optimized `.pc8c` format using `shrinko8`.
 
 ### Prerequisites
 1. **Python 3.x** installed on your host system.
 2. [**shrinko8**](https://github.com/thisismypassport/shrinko8): The popular PICO-8 code optimizer (`shrinko8.py` or `shrinko8.exe`). 
 
-Put either `shrinko8` or `pc8_compile` inside a `tools/` folder under your script directory, or keep them in the same folder as `png2pc8c.py`. The script will automatically auto-detect them.
+Put `shrinko8` inside a `tools/` folder under your script directory, or keep them in the same folder as `png2pc8c.py`. The script will automatically auto-detect them.
 
 ### Usage
 Run the script from your terminal, passing the target `.p8.png` cartridge file as the argument:
