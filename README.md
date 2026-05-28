@@ -175,12 +175,6 @@ The physical keyboard and side keys of the M5Cardputer are bound to PICO-8 Playe
 
 ## 🔧 Troubleshooting
 
-#### Q. Cartridge loads but the screen stays frozen or black.
-A. Verify your pipeline routing inside `main.cpp`'s `loop()`. If a cartridge flips the system away from the optimal fast-path rendering matrix (`g_vm->render_fast() == false`), ensure the fallback pixel array is properly copied, byte-swapped to Big-Endian RGB565, and pushed via `g_hal.pushScreenBuffer()`.
-
-#### Q. Real-time loop triggers `*** BIOS LUA ERROR 4: not enough memory`.
-A. Double check `src/pico8/vm.cpp`. Ensure the `vm::vm()` constructor explicitly bypasses standard Lua memory configurations by invoking `lua_newstate(baremetal_lua_alloc, nullptr)` and configuring aggressive GC steps before running core initialization routines or bindings.
-
 #### Q. A cartridge crashes with an error or triggers a sudden device reset.
 A. Because the ESP32-S3 operates under highly constrained memory limits (320KB RAM), complex or resource-heavy cartridges might run out of memory. If you encounter a cartridge that crashes or resets the device, please let us know by opening a GitHub Issue (kindly and gently)! We appreciate your support in making ZPT8 better.
 
