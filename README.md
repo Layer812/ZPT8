@@ -175,6 +175,12 @@ The physical keyboard and side keys of the M5Cardputer are bound to PICO-8 Playe
 
 ## 🔧 Troubleshooting
 
+#### Q. Cartridge loads but the screen stays frozen or black.
+A. Verify your pipeline routing inside `main.cpp`'s `loop()`. If a cartridge flips the system away from the optimal fast-path rendering matrix (`g_vm->render_fast() == false`), ensure the fallback pixel array is properly copied, byte-swapped to Big-Endian RGB565, and pushed via `g_hal.pushScreenBuffer()`.
+
+#### Q. Real-time loop triggers `*** BIOS LUA ERROR 4: not enough memory`.
+A. Double check `src/pico8/vm.cpp`. Ensure the `vm::vm()` constructor explicitly bypasses standard Lua memory configurations by invoking `lua_newstate(baremetal_lua_alloc, nullptr)` and configuring aggressive GC steps before running core initialization routines or bindings.
+
 #### Q. A cartridge crashes with an error or triggers a sudden device reset.
 A. Because the ESP32-S3 operates under highly constrained memory limits (320KB RAM), complex or resource-heavy cartridges might run out of memory. If you encounter a cartridge that crashes or resets the device, please let us know by opening a GitHub Issue (kindly and gently)! We appreciate your support in making ZPT8 better.
 
@@ -184,5 +190,6 @@ A. Because the ESP32-S3 operates under highly constrained memory limits (320KB R
 
 * **Zepto-8 Core**: Copyright © 2016–2024 Sam Hocevar (Do What the Fuck You Want to Public License - WTFPL).
 * **z8lua Extension**: Customized Lua 5.2 Embedded Subsystem.
+* **LodePNG**: Copyright © 2005–2020 Lode Vandevenne (zlib License).
 * **Custom Modifications & New Additions**: Copyright © 2026 Layer8. Licensed under the MIT License.
 * **Jelpi Sample Asset**: `jelpi.pc8c` is an optimized conversion of "Jelpi Adventures", an official demo cartridge originally created by Lexaloffle Games, provided purely for hardware and performance verification purposes.

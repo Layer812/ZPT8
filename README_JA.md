@@ -178,6 +178,12 @@ M5Cardputerの物理キーボードおよびサイドキーは、PICO-8のプレ
 
 ## 🔧 トラブルシューティング
 
+#### Q. カートリッジはロードされるが、画面が黒いまま、またはフリーズする。
+A. `main.cpp` の `loop()` 内のパイプラインルーティングを確認してください。カートリッジが高速レンダリング（`g_vm->render_fast() == false`）から外れた場合、フォールバックピクセル配列が正しくコピーされ、Big-Endian RGB565へバイトスワップされて、`g_hal.pushScreenBuffer()` によってプッシュされているか確認してください。
+
+#### Q. リアルタイムループ中に `*** BIOS LUA ERROR 4: not enough memory` が発生する。
+A. `src/pico8/vm.cpp` をダブルチェックしてください。`vm::vm()` コンストラクタが、通常のLuaメモリ設定をバイパスして `lua_newstate(baremetal_lua_alloc, nullptr)` を呼び出し、コア初期化ルーチンを実行する前にアグレッシブなGCステップを設定しているか確認してください。
+
 #### Q. カートリッジがエラーでクラッシュしたり、デバイスが突然リセット（再起動）される。
 A. ESP32-S3の極めて限られたメモリ制限（320KB RAM）のなかで動作しているため、複雑なカートリッジやメモリ消費の激しいカートリッジではメモリ不足（OutOfMemory）が発生することがあります。もしクラッシュや強制リセットが発生するカートリッジを見つけた場合は、GitHubの Issue でやさしく教えていただけると幸いです！ ZPT8をより良くするためのご協力に感謝いたします。
 
@@ -187,5 +193,6 @@ A. ESP32-S3の極めて限られたメモリ制限（320KB RAM）のなかで動
 
 * **Zepto-8 Core**: Copyright © 2016–2024 Sam Hocevar (Do What the Fuck You Want to Public License - WTFPL).
 * **z8lua 拡張**: カスタマイズされた Lua 5.2 組み込みサブシステム。
+* **LodePNG**: Copyright © 2005–2020 Lode Vandevenne (zlibライセンス).
 * **改変および新規追加部分**: Copyright © 2026 Layer8. MITライセンスに準拠します。
 * **Jelpi サンプルアセット**: `jelpi.pc8c` は Lexaloffle Games が公式に作成したデモカートリッジ「Jelpi Adventures」を最適化変換したものであり、ハードウェアおよびパフォーマンスの検証目的でのみ提供されています。
