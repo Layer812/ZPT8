@@ -1,0 +1,3 @@
+[submodule "zepto8"]
+	path = zepto8
+	url = https://github.com/samhocevar/zepto8.git
