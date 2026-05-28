@@ -1,8 +1,8 @@
-# ZPT8 (M5Cardputer用 Zepto-8 移植版)
+# ZPT8PC (M5Cardputer用 Zepto-8 移植版)
 
 [English Version](README.md)
 
-ZPT8は、カスタマイズされたZepto-8コアをベースに構築された、M5Cardputer専用に高度に最適化されたPICO-8ファンタジーコンソールエミュレータです。
+ZPT8PCは、カスタマイズされたZepto-8コアをベースに構築された、M5Cardputer専用に高度に最適化されたPICO-8ファンタジーコンソールエミュレータです。
 
 静的バッファの再利用、メモリ割り当てオーバーヘッドゼロのカスタムLuaアロケータ、リアルタイムの積極的なガベージコレクション（GC）など、アグレッシブなベアメタルメモリハックを採用することにより、ESP32-S3の制限された320KB RAMの壁を打ち破ります。これにより、スタンドアロンのシステムBIOSの起動や、最適化された`.pc8c`フォーマットに変換された重く複雑なPICO-8カートリッジを、手のひらの上で動かすことができます。<br>
 <img width="480" height="270" alt="Image" src="https://github.com/user-attachments/assets/10904ae2-a344-4af6-b236-2014e23407d8" />
