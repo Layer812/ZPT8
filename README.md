@@ -69,16 +69,17 @@ This project relies on the following repositories:
 
 ### Building and Uploading Firmware
 
-#### 1. Clone the Repository (with Submodules)
-Clone this repository recursively into a directory named `ZPT8` to fetch the source code along with all required submodules (such as `zepto8`):
+#### 1. Clone the Repository & Dependencies
+Clone this repository into a directory named `ZPT8`, then manually clone the required `zepto8` core recursively inside it:
 ```bash
-git clone --recursive https://github.com/Layer812/ZPT8.git ZPT8
-```
-If you have already cloned the repository without submodules, navigate into the directory and initialize them:
-```bash
+# Clone ZPT8
+git clone https://github.com/Layer812/ZPT8.git ZPT8
 cd ZPT8
-git submodule update --init --recursive
+
+# Clone the dependent zepto8 core recursively into the ZPT8 folder
+git clone --recursive https://github.com/samhocevar/zepto8.git zepto8
 ```
+
 
 #### 2. Import Project
 Launch VSCode and open the cloned `ZPT8` directory (containing `platformio.ini`). PlatformIO will automatically initialize.
@@ -174,6 +175,12 @@ The physical keyboard and side keys of the M5Cardputer are bound to PICO-8 Playe
 ---
 
 ## 🔧 Troubleshooting
+
+#### Q. Cartridge loads but the screen stays frozen or black.
+A. Verify your pipeline routing inside `main.cpp`'s `loop()`. If a cartridge flips the system away from the optimal fast-path rendering matrix (`g_vm->render_fast() == false`), ensure the fallback pixel array is properly copied, byte-swapped to Big-Endian RGB565, and pushed via `g_hal.pushScreenBuffer()`.
+
+#### Q. Real-time loop triggers `*** BIOS LUA ERROR 4: not enough memory`.
+A. Double check `src/pico8/vm.cpp`. Ensure the `vm::vm()` constructor explicitly bypasses standard Lua memory configurations by invoking `lua_newstate(baremetal_lua_alloc, nullptr)` and configuring aggressive GC steps before running core initialization routines or bindings.
 
 #### Q. A cartridge crashes with an error or triggers a sudden device reset.
 A. Because the ESP32-S3 operates under highly constrained memory limits (320KB RAM), complex or resource-heavy cartridges might run out of memory. If you encounter a cartridge that crashes or resets the device, please let us know by opening a GitHub Issue (kindly and gently)! We appreciate your support in making ZPT8 better.
