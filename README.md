@@ -1,8 +1,8 @@
-# ZPT8PC (Zepto-8 Portable for M5Cardputer)
+# ZPT8 (Zepto-8 Portable for M5Cardputer)
 
 [日本語版はこちら](README_JA.md)
 
-ZPT8PC is a highly optimized PICO-8 fantasy console emulator tailored specifically for the M5Cardputer, built upon a customized Zepto-8 core. 
+ZPT8 is a highly optimized PICO-8 fantasy console emulator tailored specifically for the M5Cardputer, built upon a customized Zepto-8 core. 
 
 By employing aggressive bare-metal memory hacks—including static buffer reuse, custom zero-overhead Lua memory allocators, and real-time aggressive Garbage Collection (GC)—ZPT8 shatters the restrictive 320KB RAM barrier of the ESP32-S3. This allows it to successfully boot standalone system BIOS and run heavy, complex PICO-8 cartridges converted into the optimized `.pc8c` format right in the palm of your hand.<br>
 <img width="480" height="270" alt="Image" src="https://github.com/user-attachments/assets/10904ae2-a344-4af6-b236-2014e23407d8" />
@@ -70,17 +70,18 @@ This project relies on the following repositories:
 ### Building and Uploading Firmware
 
 #### 1. Clone the Repository (with Submodules)
-To fetch the source code along with all required submodules (such as `zepto8` or dependent libraries), clone the repository using the `--recursive` flag:
+Clone this repository recursively into a directory named `ZPT8` to fetch the source code along with all required submodules (such as `zepto8`):
 ```bash
-git clone --recursive <YOUR_REPOSITORY_URL>
+git clone --recursive https://github.com/Layer812/ZPT8.git ZPT8
 ```
-If you have already cloned the repository without submodules, initialize and update them by running:
+If you have already cloned the repository without submodules, navigate into the directory and initialize them:
 ```bash
+cd ZPT8
 git submodule update --init --recursive
 ```
 
 #### 2. Import Project
-Launch VSCode and open the project's root directory (containing `platformio.ini`). PlatformIO will automatically initialize.
+Launch VSCode and open the cloned `ZPT8` directory (containing `platformio.ini`). PlatformIO will automatically initialize.
 
 #### 3. Build and Upload Emulator to M5Cardputer
 This project targets the M5Cardputer (internally driven by M5Stack StampS3).
