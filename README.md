@@ -1,5 +1,7 @@
 # ZPT8 (Zepto-8 Portable for M5Cardputer)
 
+[日本語版はこちら](README_JA.md)
+
 ZPT8 is a highly optimized PICO-8 fantasy console emulator tailored specifically for the M5Cardputer, built upon a customized Zepto-8 core. 
 
 By employing aggressive bare-metal memory hacks—including static buffer reuse, custom zero-overhead Lua memory allocators, and real-time aggressive Garbage Collection (GC)—ZPT8 shatters the restrictive 320KB RAM barrier of the ESP32-S3. This allows it to successfully boot standalone system BIOS and run heavy, complex PICO-8 cartridges converted into the optimized `.pc8c` format right in the palm of your hand.<br>
@@ -44,11 +46,111 @@ SD Card Root/
 
 ---
 
-## 🛠️ How to Compile Cartridges (`.p8.png` ➔ `.pc8c`)
-ZPT8 runs highly optimized .pc8c format cartridges from the SD card.
-The compiler tool chain (including python scripts and binaries to convert .p8.png to .pc8c) is currently being prepared and will be released on GitHub soon!
+## 💻 Build & Development Setup
 
-For now, please enjoy the pre-installed system and default verification games (jelpi).
+Steps for building the emulator firmware and compilation utilities locally.
+
+### Prerequisites
+1. **Visual Studio Code (VSCode)**
+2. **PlatformIO IDE Extension** (installed inside VSCode)
+3. **M5Cardputer Device** (with a USB-C cable to connect to your PC)
+
+### Dependent Repositories & Libraries
+This project relies on the following repositories:
+* **Zepto-8 Core**: [samhocevar/zepto8](https://github.com/samhocevar/zepto8) (PICO-8 emulator core)
+* **M5Unified**: [m5stack/M5Unified](https://github.com/m5stack/M5Unified) (Hardware abstraction layer for M5Stack)
+* **M5Cardputer**: [m5stack/M5Cardputer](https://github.com/m5stack/M5Cardputer) (M5Cardputer library)
+
+### Optional Tools
+* **Shrinko8**: A PICO-8 optimizer and minifier. Although not required to compile ZPT8 itself, if you need to optimize and compress your Lua code size before converting to `.pc8c`, you can clone and use Shrinko8 from the official repository:
+  ```bash
+  git clone https://github.com/thisistherong/shrinko8.git
+  ```
+
+### Building and Uploading Firmware
+
+#### 1. Clone the Repository (with Submodules)
+To fetch the source code along with all required submodules (such as `zepto8` or dependent libraries), clone the repository using the `--recursive` flag:
+```bash
+git clone --recursive <YOUR_REPOSITORY_URL>
+```
+If you have already cloned the repository without submodules, initialize and update them by running:
+```bash
+git submodule update --init --recursive
+```
+
+#### 2. Import Project
+Launch VSCode and open the project's root directory (containing `platformio.ini`). PlatformIO will automatically initialize.
+
+#### 3. Build and Upload Emulator to M5Cardputer
+This project targets the M5Cardputer (internally driven by M5Stack StampS3).
+* **Using VSCode GUI**:
+  1. Click the PlatformIO sidebar icon (the ant icon).
+  2. Under **Project Tasks**, navigate to `env:m5stack-stamps3` ➔ **General** ➔ **Upload** to build and flash.
+  3. Start **Monitor** under the same section to inspect debug output.
+* **Using CLI**:
+  ```bash
+  # Compile the code
+  pio run -e m5stack-stamps3
+  
+  # Compile and upload to the connected M5Cardputer
+  pio run -e m5stack-stamps3 --target upload
+  
+  # Start serial monitor
+  pio run -e m5stack-stamps3 --target monitor
+  ```
+
+#### 4. Build Cartridge Compiler (`pc8_compile`)
+Compile the native desktop utility that converts `.p8` cartridges into the binary `.pc8c` format.
+* **Using CLI**:
+  ```bash
+  # Compile for your native desktop environment
+  pio run -e native_tool
+  ```
+  Once compiled, the executable binary will be generated. On Windows, locate the executable and move it to `tools/pc8_compile.exe` for convenience.
+
+---
+
+## 🛠️ How to Compile Cartridges (`.p8.png` ➔ `.pc8c`)
+ZPT8 runs highly optimized `.pc8c` format cartridges from the SD card.
+Follow these steps to convert standard `.p8.png` cartridges:
+
+### Prerequisites
+* Python 3.x installed.
+* `Pillow` image library installed:
+  ```bash
+  pip install Pillow
+  ```
+
+### Step 1: Decode `.p8.png` to `.p8` Text
+Run the decoder tool `p28.py` to extract the Lua code and graphics into a plain `.p8` cartridge text file:
+```bash
+python p28.py <input_cart.p8.png> <output_cart.p8>
+```
+* **Example**:
+  ```bash
+  python p28.py jelpi.p8.png jelpi.p8
+  ```
+
+### Step 2: Compile `.p8` to `.pc8c` Binary
+Use the compiled `pc8_compile` executable to optimize and pack the code/ROM:
+
+#### Command syntax:
+```bash
+tools/pc8_compile.exe <mode> <input_cart.p8> <output_cart.pc8c>
+```
+* `<mode>`: Set to `game` for game cartridges, or `bios` for system bios cartridges.
+
+#### Example (Game):
+```bash
+tools/pc8_compile.exe game jelpi.p8 jelpi.pc8c
+```
+#### Example (BIOS):
+```bash
+tools/pc8_compile.exe bios bios.p8 bios.pc8c
+```
+
+Copy the generated `.pc8c` files onto the root directory of your microSD card.
 
 ---
 
@@ -84,5 +186,5 @@ A. Double check `src/pico8/vm.cpp`. Ensure the `vm::vm()` constructor explicitly
 
 * **Zepto-8 Core**: Copyright © 2016–2024 Sam Hocevar (Do What the Fuck You Want to Public License - WTFPL).
 * **z8lua Extension**: Customized Lua 5.2 Embedded Subsystem.
+* **Custom Modifications & New Additions**: Copyright © 2026 Layer8. Licensed under the MIT License.
 * **Jelpi Sample Asset**: `jelpi.pc8c` is an optimized conversion of "Jelpi Adventures", an official demo cartridge originally created by Lexaloffle Games, provided purely for hardware and performance verification purposes.
-```
