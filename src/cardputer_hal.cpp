@@ -30,6 +30,10 @@ bool CardputerHAL::begin()
 #if defined(ARDUINO)
     // M5Cardputer init (also inits display, keyboard, speaker)
     auto cfg = M5.config();
+    cfg.internal_mic = false;
+    cfg.internal_spk = true;
+    cfg.internal_imu = false;
+    cfg.internal_rtc = false;
     M5Cardputer.begin(cfg, true);
 
     // Display setup: rotate landscape
@@ -330,12 +334,12 @@ void CardputerHAL::update()
 // Audio
 // ──────────────────────────────────────────────────────────────
 
-void CardputerHAL::queueAudio(const int16_t *samples, int count)
+void CardputerHAL::queueAudio(const uint8_t *samples, int count)
 {
     if (!m_audio_init || count <= 0) return;
 #if defined(ARDUINO)
     // M5Cardputer speaker: playRaw(data, length, rate, stereo, repeat, channel)
-    // We play non-stereo, 22050 Hz, no repeat, channel 0
+    // We play non-stereo, 11025 Hz (matched with main.cpp AUDIO_RATE), no repeat, channel 0
     M5Cardputer.Speaker.playRaw(samples, count, 11025, false, 1, 0, false);
 #endif
 }

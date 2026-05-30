@@ -251,7 +251,7 @@ bool cart::load_lua(std::string const &filename)
 
     refresh_code_view(this);
     init_title();
-    memset(&m_rom, 0, sizeof(m_rom));
+    memset(m_rom.data(), 0, sizeof(m_rom));
     init_rom();
     return true;
 }
@@ -261,13 +261,13 @@ bool cart::load_lua(std::string const &filename)
 // ──────────────────────────────────────────────────────────────────────────────
 void cart::set_bin(std::vector<uint8_t> const &bytes)
 {
-    memcpy(&m_rom, bytes.data(), sizeof(m_rom));
+    memcpy(m_rom.data(), bytes.data(), sizeof(m_rom));
     uint8_t const *vbytes = bytes.data() + sizeof(m_rom);
     int version = vbytes[0];
     int minor = (vbytes[1] << 24) | (vbytes[2] << 16) | (vbytes[3] << 8) | vbytes[4];
 
     // Retrieve code, with optional decompression → write to static buffer
-    std::string decompressed = code::decompress(m_rom.code().data());
+    std::string decompressed = code::decompress(m_rom.data() + 0x4300);
     reset_code_buf();
     for (auto c : decompressed) append_code_char(c);
 
@@ -288,10 +288,10 @@ void cart::init_rom()
     // init music sfx to be disabled
     for (int i = 0; i < 64; ++i)
     {
-        m_rom.song[i].sfx0 = 65;
-        m_rom.song[i].sfx1 = 66;
-        m_rom.song[i].sfx2 = 67;
-        m_rom.song[i].sfx3 = 68;
+        m_rom[0x3100 + i * 4 + 0] = 65;
+        m_rom[0x3100 + i * 4 + 1] = 66;
+        m_rom[0x3100 + i * 4 + 2] = 67;
+        m_rom[0x3100 + i * 4 + 3] = 68;
     }
 }
 
@@ -374,7 +374,7 @@ struct p8_reader
     section m_current_section = section::header;
 
     // Direct write destinations (can be nullptr)
-    memory* m_rom = nullptr;
+    cart::rom_t* m_rom = nullptr;
     std::vector<uint8_t>* m_label = nullptr;
 
     // Writing offsets and small record buffers
@@ -399,7 +399,7 @@ struct p8_reader
     std::string* m_author_ptr = nullptr;
     int m_lua_lines_written = 0;
 
-    p8_reader(memory* rom, std::vector<uint8_t>* label, cart* cart,
+    p8_reader(cart::rom_t* rom, std::vector<uint8_t>* label, cart* cart,
               std::string* title = nullptr, std::string* author = nullptr)
         : m_rom(rom), m_label(label), m_cart(cart),
           m_title_ptr(title), m_author_ptr(author)
@@ -417,17 +417,21 @@ struct p8_reader
                          | ((uint32_t)m_current_sfx[4 + j * 5 / 2 + 2]);
             ins = (j & 1) ? ins & 0xfffff : ins >> 4;
 
-            m_rom->sfx[m_sfx_index].notes[j].key        = (ins & 0x3f000) >> 12;
-            m_rom->sfx[m_sfx_index].notes[j].instrument = (ins & 0x700)   >> 8;
-            m_rom->sfx[m_sfx_index].notes[j].volume     = (ins & 0x70)    >> 4;
-            m_rom->sfx[m_sfx_index].notes[j].effect     =  ins & 0x7;
-            m_rom->sfx[m_sfx_index].notes[j].custom     = (ins & 0x800)   >> 11;
+            uint16_t key        = (ins & 0x3f000) >> 12;
+            uint16_t instrument = (ins & 0x700)   >> 8;
+            uint16_t volume     = (ins & 0x70)    >> 4;
+            uint16_t effect     =  ins & 0x7;
+            uint16_t custom     = (ins & 0x800)   >> 11;
+
+            uint16_t note_val = key | (instrument << 6) | (volume << 9) | (effect << 12) | (custom << 15);
+            m_rom->data()[0x3200 + m_sfx_index * 68 + j * 2 + 0] = note_val & 0xff;
+            m_rom->data()[0x3200 + m_sfx_index * 68 + j * 2 + 1] = (note_val >> 8) & 0xff;
         }
 
-        m_rom->sfx[m_sfx_index].filters    = m_current_sfx[0];
-        m_rom->sfx[m_sfx_index].speed      = m_current_sfx[1];
-        m_rom->sfx[m_sfx_index].loop_start = m_current_sfx[2];
-        m_rom->sfx[m_sfx_index].loop_end   = m_current_sfx[3];
+        m_rom->data()[0x3200 + m_sfx_index * 68 + 64] = m_current_sfx[0];
+        m_rom->data()[0x3200 + m_sfx_index * 68 + 65] = m_current_sfx[1];
+        m_rom->data()[0x3200 + m_sfx_index * 68 + 66] = m_current_sfx[2];
+        m_rom->data()[0x3200 + m_sfx_index * 68 + 67] = m_current_sfx[3];
 
         m_sfx_index++;
         m_current_sfx_size = 0;
@@ -438,10 +442,10 @@ struct p8_reader
         if (!m_rom || m_mus_index >= 64) return;
         if (m_current_mus_size < 5) return;
 
-        m_rom->song[m_mus_index].data[0] = m_current_mus[1] | ((m_current_mus[0] << 7) & 0x80);
-        m_rom->song[m_mus_index].data[1] = m_current_mus[2] | ((m_current_mus[0] << 6) & 0x80);
-        m_rom->song[m_mus_index].data[2] = m_current_mus[3] | ((m_current_mus[0] << 5) & 0x80);
-        m_rom->song[m_mus_index].data[3] = m_current_mus[4] | ((m_current_mus[0] << 4) & 0x80);
+        m_rom->data()[0x3100 + m_mus_index * 4 + 0] = m_current_mus[1] | ((m_current_mus[0] << 7) & 0x80);
+        m_rom->data()[0x3100 + m_mus_index * 4 + 1] = m_current_mus[2] | ((m_current_mus[0] << 6) & 0x80);
+        m_rom->data()[0x3100 + m_mus_index * 4 + 2] = m_current_mus[3] | ((m_current_mus[0] << 5) & 0x80);
+        m_rom->data()[0x3100 + m_mus_index * 4 + 3] = m_current_mus[4] | ((m_current_mus[0] << 4) & 0x80);
 
         m_mus_index++;
         m_current_mus_size = 0;
@@ -618,18 +622,17 @@ struct p8_reader
                     {
                         case section::gfx:
                         {
-                            if (m_rom && m_gfx_written < sizeof(m_rom->gfx))
+                            if (m_rom && m_gfx_written < 0x2000)
                             {
-                                uint8_t *raw_gfx = (uint8_t *)m_rom->gfx.data;
-                                raw_gfx[m_gfx_written++] = val;
+                                m_rom->data()[m_gfx_written++] = val;
                             }
                             break;
                         }
                         case section::gff:
                         {
-                            if (m_rom && m_gff_written < sizeof(m_rom->gfx_flags))
+                            if (m_rom && m_gff_written < 0x100)
                             {
-                                m_rom->gfx_flags[m_gff_written++] = val;
+                                m_rom->data()[0x3000 + m_gff_written++] = val;
                             }
                             break;
                         }
@@ -639,13 +642,12 @@ struct p8_reader
                             {
                                 if (m_map_written < 4096)
                                 {
-                                    uint8_t *raw_map = (uint8_t *)&m_rom->map;
-                                    raw_map[m_map_written++] = val;
+                                    m_rom->data()[0x2000 + m_map_written++] = val;
                                 }
                                 else if (m_map_written < 8192)
                                 {
                                     size_t idx = m_map_written - 4096;
-                                    m_rom->map2[idx] |= val;
+                                    m_rom->data()[0x1000 + idx] |= val;
                                     m_map_written++;
                                 }
                             }
@@ -1017,16 +1019,16 @@ bool cart::save_png(std::string const &filename) const
 // ──────────────────────────────────────────────────────────────────────────────
 // cart::set_from_ram  — copy RAM data back into the cart ROM
 // ──────────────────────────────────────────────────────────────────────────────
-void cart::set_from_ram(memory const &ram, int in_dst, int in_src, int in_size)
+void cart::set_from_ram(uint8_t const *ram, int in_dst, int in_src, int in_size)
 {
     // If writing after the cart, nothing to do
-    if (in_dst > (int)offsetof(memory, code))
+    if (in_dst > 0x4300)
     {
         return;
     }
 
     // Now copy possibly legal data
-    int amount = std::min(in_size, (int)offsetof(memory, code) - in_dst);
+    int amount = std::min(in_size, 0x4300 - in_dst);
 
     if (amount <= 0)
     {
@@ -1049,14 +1051,14 @@ std::vector<uint8_t> cart::get_compressed_code() const
 // ──────────────────────────────────────────────────────────────────────────────
 std::vector<uint8_t> cart::get_bin() const
 {
-    int const data_size = offsetof(memory, code);
+    int const data_size = 0x4300;
 
     // Create ROM image
     std::vector<uint8_t> ret;
 
     // Copy non-code data to ROM
     ret.resize(data_size);
-    memcpy(ret.data(), &m_rom, data_size);
+    memcpy(ret.data(), m_rom.data(), data_size);
 
     // Compress and append code
     auto compressed = code::compress(std::string((const char*)s_code_buf, s_code_len));
@@ -1086,8 +1088,8 @@ bool cart::save_p8(std::string const &filename) const
 
     // Export gfx section
     int gfx_lines = 0;
-    for (int i = 0; i < (int)sizeof(m_rom.gfx); ++i)
-        if (m_rom.gfx.data[i / 64][i % 64] != 0)
+    for (int i = 0; i < 0x2000; ++i)
+        if (m_rom[i] != 0)
             gfx_lines = 1 + i / 64;
 
     for (int line = 0; line < gfx_lines; ++line)
@@ -1097,9 +1099,7 @@ bool cart::save_p8(std::string const &filename) const
 
         for (int i = 0; i < 64; ++i)
         {
-            // Nybbles are stored swapped in .p8 gfx section
-            uint8_t val = m_rom.gfx.data[line][i];
-            // val = lo_nybble | (hi_nybble << 4) → write hi first, lo second
+            uint8_t val = m_rom[line * 64 + i];
             ret += fmt_hex2(uint8_t(val * 0x101 / 0x10));
         }
         ret += '\n';
@@ -1121,8 +1121,8 @@ bool cart::save_p8(std::string const &filename) const
 
     // Export gff section
     int gff_lines = 0;
-    for (int i = 0; i < (int)sizeof(m_rom.gfx_flags); ++i)
-        if (m_rom.gfx_flags[i] != 0)
+    for (int i = 0; i < 0x100; ++i)
+        if (m_rom[0x3000 + i] != 0)
             gff_lines = 1 + i / 128;
 
     for (int line = 0; line < gff_lines; ++line)
@@ -1131,18 +1131,15 @@ bool cart::save_p8(std::string const &filename) const
             ret += "__gff__\n";
 
         for (int i = 0; i < 128; ++i)
-            ret += fmt_hex2(m_rom.gfx_flags[128 * line + i]);
+            ret += fmt_hex2(m_rom[0x3000 + 128 * line + i]);
 
         ret += '\n';
     }
 
-    // Only serialise m_rom.map, because m_rom.map2 overlaps with m_rom.gfx
-    // which has already been serialised.
-    // FIXME: we could choose between map2 and gfx2 by looking at line
-    //        patterns, because the stride is different. See mandel.p8.
+    // Export map section
     int map_lines = 0;
-    for (int i = 0; i < (int)sizeof(m_rom.map); ++i)
-        if (m_rom.map[i] != 0)
+    for (int i = 0; i < 4096; ++i)
+        if (m_rom[0x2000 + i] != 0)
             map_lines = 1 + i / 128;
 
     for (int line = 0; line < map_lines; ++line)
@@ -1151,24 +1148,23 @@ bool cart::save_p8(std::string const &filename) const
             ret += "__map__\n";
 
         for (int i = 0; i < 128; ++i)
-            ret += fmt_hex2(m_rom.map[128 * line + i]);
+            ret += fmt_hex2(m_rom[0x2000 + 128 * line + i]);
 
         ret += '\n';
     }
 
     // Export sfx section
     int sfx_lines = 0;
-    for (int i = 0; i < (int)sizeof(m_rom.sfx); ++i)
-        if (((uint8_t const *)&m_rom.sfx)[i] != 0)
-            sfx_lines = 1 + i / (int)sizeof(m_rom.sfx[0]);
+    for (int i = 0; i < 4352; ++i)
+        if (m_rom[0x3200 + i] != 0)
+            sfx_lines = 1 + i / 68;
 
     for (int line = 0; line < sfx_lines; ++line)
     {
         if (line == 0)
             ret += "__sfx__\n";
 
-        uint8_t const *data = (uint8_t const *)&m_rom.sfx[line];
-        // First 4 bytes: filters, speed, loop_start, loop_end (stored at offset 64)
+        const uint8_t *data = m_rom.data() + 0x3200 + line * 68;
         ret += fmt_hex2(data[64]);
         ret += fmt_hex2(data[65]);
         ret += fmt_hex2(data[66]);
@@ -1189,32 +1185,30 @@ bool cart::save_p8(std::string const &filename) const
     }
 
     // Export music section
-    // FIXME: only save channels that are not disabled, like pico-8 does?
     int music_lines = 0;
-    for (int i = 0; i < (int)sizeof(m_rom.song); ++i)
-        if (((uint8_t const *)&m_rom.song)[i] != 0)
-            music_lines = 1 + i / (int)sizeof(m_rom.song[0]);
+    for (int i = 0; i < 256; ++i)
+        if (m_rom[0x3100 + i] != 0)
+            music_lines = 1 + i / 4;
 
     for (int line = 0; line < music_lines; ++line)
     {
         if (line == 0)
             ret += "__music__\n";
 
-        auto const &song  = m_rom.song[line];
-        int const   flags = song.start | (song.loop << 1) | (song.stop << 2) | (song.mode << 3);
+        uint8_t const *sdata = m_rom.data() + 0x3100 + line * 4;
+        int flags = (sdata[0] >> 7) | ((sdata[1] >> 7) << 1) | ((sdata[2] >> 7) << 2) | ((sdata[3] >> 7) << 3);
 
         ret += fmt_hex2((uint8_t)flags);
         ret += ' ';
-        ret += fmt_hex2(song.sfx(0));
-        ret += fmt_hex2(song.sfx(1));
-        ret += fmt_hex2(song.sfx(2));
-        ret += fmt_hex2(song.sfx(3));
+        ret += fmt_hex2(sdata[0] & 0x7f);
+        ret += fmt_hex2(sdata[1] & 0x7f);
+        ret += fmt_hex2(sdata[2] & 0x7f);
+        ret += fmt_hex2(sdata[3] & 0x7f);
         ret += '\n';
     }
 
     ret += '\n';
 
-    // Write to file via lol_compat (SD card on Arduino, fwrite on desktop)
     return lol::file::write(filename, ret);
 }
 

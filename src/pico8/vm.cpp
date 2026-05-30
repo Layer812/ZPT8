@@ -28,9 +28,10 @@
 #include "esp_partition.h"
 #include "esp_spi_flash.h"
 #endif
-
 namespace z8::pico8 {
-    // ⭕ クォータ制限を一切かけず、ESP32の生ヒープを直接駆動する無制限アロケータ
+
+static lua_State* g_active_lua = nullptr;
+
 static void* baremetal_lua_alloc(void *ud, void *ptr, size_t osize, size_t nsize) {
     (void)ud; 
     (void)osize;
@@ -38,10 +39,47 @@ static void* baremetal_lua_alloc(void *ud, void *ptr, size_t osize, size_t nsize
         free(ptr);
         return nullptr;
     }
-    return realloc(ptr, nsize);
+    void* result = realloc(ptr, nsize);
+    if (result == nullptr && g_active_lua != nullptr) {
+#if defined(ARDUINO)
+        Serial.printf("[WARN] OOM in baremetal_lua_alloc (nsize=%d)! Free Heap: %u, MaxAlloc: %u. Running full GC...\n",
+                      (int)nsize, (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMaxAllocHeap());
+        Serial.flush();
+        
+        // Dump Lua callstack for diagnostic purposes
+        lua_Debug ar;
+        int level = 0;
+        Serial.println("=== LUA OOM CALLSTACK DUMP ===");
+        while (lua_getstack(g_active_lua, level, &ar)) {
+            lua_getinfo(g_active_lua, "nSl", &ar);
+            Serial.printf("  [%d] %s:%d in function '%s' (type: %s)\n",
+                          level,
+                          ar.short_src ? ar.short_src : "?",
+                          ar.currentline,
+                          ar.name ? ar.name : "?",
+                          ar.namewhat ? ar.namewhat : "?");
+            level++;
+        }
+        Serial.println("==============================");
+        Serial.flush();
+#endif
+        lua_gc(g_active_lua, LUA_GCCOLLECT, 0);
+        result = realloc(ptr, nsize);
+#if defined(ARDUINO)
+        if (result != nullptr) {
+            Serial.println("[INFO] GC recovered memory successfully!");
+            Serial.flush();
+        } else {
+            Serial.println("[ERROR] GC could not recover enough memory!");
+            Serial.flush();
+        }
+#endif
+    }
+    return result;
 }
 
-uint8_t g_bios_gfx[8192] = {};
+
+const uint8_t* g_bios_gfx_ptr = nullptr;
 
 static const char glue_code[] = R"GLUE_CODE(
 if (_init) _init()
@@ -259,6 +297,7 @@ vm::vm()
 
 // ⭕ 1. 制限つきアロケータを完全にバイパスし、無制限の realloc ラッパーを名実ともに直結！
     m_lua = lua_newstate(baremetal_lua_alloc, nullptr);
+    g_active_lua = m_lua;
 
     if (!m_lua) {
         Serial.println("[ERROR] Failed to create baremetal Lua state!");
@@ -271,9 +310,25 @@ vm::vm()
     lua_gc(m_lua, LUA_GCSETPAUSE, 100);      // 次のGCまでのウェイトを0にする
     lua_gc(m_lua, LUA_GCSETSTEPMUL, 500);   // ゴミを拾う速度を通常の5倍に引き上げる
 
-    luaL_openlibs(m_lua);
-    
-    // ⭕ コンパイラの指定通り正しい関数名に修正します
+    // Only load essential Lua libraries to save RAM (skip io, os, package)
+    static const struct luaL_Reg lib[] = {
+        {"_G", luaopen_base},
+        {"coroutine", luaopen_coroutine},  // Required by BIOS: cocreate()
+        {"string", luaopen_string},
+        {"table", luaopen_table},
+        {"math", luaopen_math},
+        // {"debug", luaopen_debug},       // Disabled for RAM optimization
+        {NULL, NULL}
+    };
+    for (const struct luaL_Reg *l = lib; l->func != NULL; l++) {
+        luaL_requiref(m_lua, l->name, l->func, 1);
+        lua_pop(m_lua, 1);
+    }
+
+    // Register dummy debug table to satisfy BIOS requirements without full debug library overhead
+    luaL_dostring(m_lua, "debug = { getinfo = function() return {} end, traceback = function() return '' end, sethook = function() end, getlocal = function() return nil end }");
+
+    // ⭕ コンパイラの指定通り正しい関数名に
     lua_setpico8memory(m_lua, (const unsigned char*)&m_ram);
 
     bindings::lua::init(m_lua, this);
@@ -408,7 +463,7 @@ vm::vm()
     // Copy the BIOS font graphics from memory-mapped flash
     if (m_bios->get_gfx())
     {
-        ::memcpy(g_bios_gfx, m_bios->get_gfx(), 8192);
+        g_bios_gfx_ptr = m_bios->get_gfx();
     }
 
     // Apply monkey-patch to override __z8_run_cart for stream loading
@@ -426,17 +481,41 @@ __z8_run_cart = function(dummy)
             error()
         end
         __z8_cart_running = true
+
+        -- XPcall helper to dump stacktrace
+        local function safe_call(name, fn, ...)
+            if not fn then return end
+            local ok, err = xpcall(fn, function(e)
+                return tostring(e) .. "\n" .. (debug and debug.traceback and debug.traceback() or "")
+            end, ...)
+            if not ok then
+                if printh then printh("[FATAL " .. name .. "] " .. err) end
+                if cls then cls(0) end
+                if camera then camera() end
+                if cursor then cursor(0,0) end
+                if color then color(8) end
+                if print then 
+                    print("FATAL ERROR IN " .. name)
+                    print(sub(err, 1, 150))
+                end
+                if flip then flip() end
+                error(err)
+            end
+        end
+
         -- ゲームコードを実行してグローバル関数(_init,_update,_draw等)を定義
-        code()
+        safe_call("LOAD", code)
+        
         -- glue_code 相当: _init/_update/_draw のメインループ
-        if _init then _init() end
+        safe_call("INIT", _init)
+
         if _update or _update60 or _draw then
             while true do
                 if _update60 then
                     _update_buttons()
                     _mainloop=_update60
                     _set_mainloop_exists(true)
-                    _update60()
+                    safe_call("UPDATE60", _update60)
                     _mainloop=nil
                     _set_mainloop_exists(false)
                 else
@@ -445,19 +524,33 @@ __z8_run_cart = function(dummy)
                     if _update then
                         _mainloop=_update
                         _set_mainloop_exists(true)
-                        _update()
+                        safe_call("UPDATE", _update)
                         _mainloop=nil
                         _set_mainloop_exists(false)
                     end
                 end
                 if _draw then
                     holdframe()
-                    _mainloop=_draw
-                    _set_mainloop_exists(true)
-                    _draw()
-                    _mainloop=nil
-                    _set_mainloop_exists(false)
-                    flip()
+                    -- Dynamic frameskip: skip draw if C++ signals lag via GPIO (0x5f80)
+                    local lag = peek(0x5f80)
+                    local should_draw = true
+                    if lag == 1 then
+                        __frameskip_counter = (__frameskip_counter or 0) + 1
+                        if __frameskip_counter % 2 == 1 then
+                            should_draw = false
+                        end
+                    else
+                        __frameskip_counter = 0
+                    end
+                    
+                    if should_draw then
+                        _mainloop=_draw
+                        _set_mainloop_exists(true)
+                        safe_call("DRAW", _draw)
+                        _mainloop=nil
+                        _set_mainloop_exists(false)
+                        flip()
+                    end
                 else
                     yield()
                 end
@@ -477,8 +570,207 @@ end
         lol::msg::info("VM monkey patch applied successfully!\n");
     }
 
+    // ── PICO-8 compatibility aliases (MUST be after BIOS + monkey-patch) ──
+    // tostr -> tostring (PICO-8 uses tostr() instead of tostring())
+    lua_getglobal(m_lua, "tostring");
+    lua_setglobal(m_lua, "tostr");
+
+    // flr -> math.floor (PICO-8 uses flr() instead of math.floor())
+    lua_getglobal(m_lua, "math");
+    lua_getfield(m_lua, -1, "floor");
+    lua_setglobal(m_lua, "flr");
+    lua_pop(m_lua, 1); // pop math table
+
+    // ── PICO-8 arithmetic API batch bindings ──
+    // PICO-8 calls sin(), cos(), atan2(), sqrt(), abs(), ceil() globally
+    // instead of math.sin(), math.cos(), etc.
+    {
+        struct { const char* name; const char* field; } math_map[] = {
+            {"cos", "cos"}, {"sin", "sin"}, {"atan2", "atan2"}, {"sqrt", "sqrt"},
+            {"ceil", "ceil"}
+        };
+        for (auto const& entry : math_map) {
+            lua_getglobal(m_lua, "math");
+            lua_getfield(m_lua, -1, entry.field);
+            lua_setglobal(m_lua, entry.name);
+            lua_pop(m_lua, 1); // pop math table
+        }
+    }
+
+    // ── PICO-8 bit manipulation functions ──
+    // shr(x, n) - right shift
+    lua_pushcfunction(m_lua, [](lua_State* L) {
+        int x = (int)luaL_checkinteger(L, 1);
+        int n = (int)luaL_checkinteger(L, 2);
+        lua_pushinteger(L, (lua_Integer)((unsigned)x >> n));
+        return 1;
+    });
+    lua_setglobal(m_lua, "shr");
+
+    // shl(x, n) - left shift
+    lua_pushcfunction(m_lua, [](lua_State* L) {
+        int x = (int)luaL_checkinteger(L, 1);
+        int n = (int)luaL_checkinteger(L, 2);
+        lua_pushinteger(L, (lua_Integer)(x << n));
+        return 1;
+    });
+    lua_setglobal(m_lua, "shl");
+
+    // band(x, y) - bitwise AND
+    lua_pushcfunction(m_lua, [](lua_State* L) {
+        lua_pushinteger(L, luaL_checkinteger(L, 1) & luaL_checkinteger(L, 2));
+        return 1;
+    });
+    lua_setglobal(m_lua, "band");
+
+    // bor(x, y) - bitwise OR
+    lua_pushcfunction(m_lua, [](lua_State* L) {
+        lua_pushinteger(L, luaL_checkinteger(L, 1) | luaL_checkinteger(L, 2));
+        return 1;
+    });
+    lua_setglobal(m_lua, "bor");
+
+    // bxor(x, y) - bitwise XOR
+    lua_pushcfunction(m_lua, [](lua_State* L) {
+        lua_pushinteger(L, luaL_checkinteger(L, 1) ^ luaL_checkinteger(L, 2));
+        return 1;
+    });
+    lua_setglobal(m_lua, "bxor");
+
+    // mid(x, minv, maxv) - clamp value to range
+    lua_pushcfunction(m_lua, [](lua_State* L) {
+        lua_Number x = lua_tonumber(L, 1);
+        lua_Number minv = lua_tonumber(L, 2);
+        lua_Number maxv = lua_tonumber(L, 3);
+        if (x < minv) x = minv;
+        if (x > maxv) x = maxv;
+        lua_pushnumber(L, x);
+        return 1;
+    });
+    lua_setglobal(m_lua, "mid");
+
+    // sgn(x) - sign of x
+    lua_pushcfunction(m_lua, [](lua_State* L) {
+        fix32 x = fix32(lua_tonumber(L, 1));
+        fix32 zero = fix32::frombits(0);
+        fix32 neg_one = fix32::frombits((int32_t)-65536);
+        fix32 pos_one = fix32::frombits((int32_t)65536);
+        if (x == zero) lua_pushnumber(L, lua_Number(zero));
+        else if (x < zero) lua_pushnumber(L, lua_Number(neg_one));
+        else lua_pushnumber(L, lua_Number(pos_one));
+        return 1;
+    });
+    lua_setglobal(m_lua, "sgn");
+
+    // abs(x) - absolute value
+    lua_pushcfunction(m_lua, [](lua_State* L) {
+        fix32 x = fix32::abs(fix32(lua_tonumber(L, 1)));
+        lua_pushnumber(L, lua_Number(x));
+        return 1;
+    });
+    lua_setglobal(m_lua, "abs");
+
+    // ── PICO-8 nil-guard polyfill (SAFE: no native bitwise operators) ──
+    // PICO-8 returns 0 for undefined/out-of-bounds accesses instead of nil.
+    // This polyfill wraps all getter functions to force nil→0 conversion.
+    // IMPORTANT: Avoids &, |, <<, >> operators which cause syntax errors in Lua 5.2.
+    const char* pico8_polyfill = R"lua(
+-- (0) Dummy debug table for compatibility
+debug = debug or {
+    getinfo = function() return {} end,
+    traceback = function() return "" end,
+    sethook = function() end,
+    getlocal = function() return nil end,
+}
+
+-- (1) Safe arithmetic helpers
+tostr = function(x) return tostring(x or "") end
+tonum = function(x) return tonumber(x) or 0 end
+flr = function(x) return math.floor(x or 0) end
+ceil = function(x) return math.ceil(x or 0) end
+abs = function(x) return math.abs(x or 0) end
+sqrt = function(x) return math.sqrt(math.max(x or 0, 0)) end
+max = function(a,b) return math.max(a or 0, b or 0) end
+min = function(a,b) return math.min(a or 0, b or 0) end
+time = time or function() return 0 end
+t = time
+
+cos = function(x) return math.cos((x or 0) * 6.2831853) end
+sin = function(x) return -math.sin((x or 0) * 6.2831853) end
+atan2 = function(dx,dy) return math.atan2(dy or 0, dx or 0) / 6.2831853 end
+sgn = function(x) return (x and x < 0) and -1 or 1 end
+mid = function(a,b,c) return max(min(max(a or 0, b or 0), c or 0), min(a or 0, b or 0)) end
+
+-- (2) Bit manipulation: keep existing C bindings, just add nil-guards
+-- Using 'or' pattern to avoid overwriting the C functions defined above
+band = band or function(a,b) return 0 end
+bor = bor or function(a,b) return 0 end
+bxor = bxor or function(a,b) return 0 end
+bnot = bnot or function(a) return 0 end
+shl = shl or function(a,b) return 0 end
+shr = shr or function(a,b) return 0 end
+
+split = function(s, sep)
+    local tbl = {}
+    if type(s) ~= "string" then return tbl end
+    sep = sep or ","
+    for str in string.gmatch(s, "([^"..sep.."]+)") do
+        local n = tonumber(str)
+        table.insert(tbl, n ~= nil and n or str)
+    end
+    return tbl
+end
+
+-- (3) Safe wrapper for stat (which can return nil)
+local _orig_stat = stat
+stat = function(...)
+    if not _orig_stat then return 0 end
+    local r = _orig_stat(...)
+    return r == nil and 0 or r
+end
+
+local _orig_rnd = rnd
+rnd = function(x)
+    if type(x) == "table" then
+        local c = #x
+        if c == 0 then return nil end
+        local idx = flr((_orig_rnd and _orig_rnd(c) or (math.random() * c))) + 1
+        return x[idx]
+    end
+    if _orig_rnd then
+        if x == nil then return _orig_rnd(1) end
+        local r = _orig_rnd(x)
+        return r == nil and 0 or r
+    end
+    return math.random() * (x or 1)
+end
+
+-- (4) Removed API stub injection to restore original functionality for standard cartridges
+)lua";
+
+    // Execute polyfill with error monitoring
+    int polyfill_status = luaL_dostring(m_lua, pico8_polyfill);
+    if (polyfill_status != LUA_OK)
+    {
+        lol::msg::error("PICO-8 polyfill LOAD FAILED: %s\n", lua_tostring(m_lua, -1));
 #if defined(ARDUINO)
+        Serial.printf("[ERROR] PICO-8 polyfill LOAD FAILED: %s\n", lua_tostring(m_lua, -1));
+        Serial.flush();
+#endif
+        lua_pop(m_lua, 1);
+    }
+    else
+    {
+        lol::msg::info("[SUCCESS] PICO-8 polyfill applied successfully!\n");
+#if defined(ARDUINO)
+        Serial.println("[SUCCESS] PICO-8 polyfill applied successfully!");
+        Serial.flush();
+#endif
+    }
+
+    //
     lua_gc(m_lua, LUA_GCCOLLECT, 0);
+#if defined(ARDUINO)
     Serial.printf("[DEBUG] vm constructor finished: free heap = %u bytes\n", (unsigned int)ESP.getFreeHeap());
 #endif
 }
@@ -486,6 +778,9 @@ end
 vm::~vm()
 {
     save(true);
+    if (g_active_lua == m_lua) {
+        g_active_lua = nullptr;
+    }
     lua_close(m_lua);
 }
 
@@ -493,35 +788,42 @@ vm::~vm()
 // Accessors
 // ──────────────────────────────────────────────────────────────
 
+// ⭕ Static buffers to minimize heap allocation for code bridge
+static char g_code_bridge[16384];
+static std::string g_code_bridge_str;
+static std::string g_mutable_code_bridge_str;
+
 std::string const &vm::get_code() const
 {
-    static std::string safe_code_bridge;
-    // 呼び出されるたびに古い中身をクリアし、現在の最新コードのみを一時保持（メモリの肥大化を防ぐ）
-    safe_code_bridge = m_cart.get_code(); 
-    return safe_code_bridge;
+    const std::string& code = m_cart.get_code();
+    size_t len = code.size();
+    if (len >= sizeof(g_code_bridge)) len = sizeof(g_code_bridge) - 1;
+    memcpy(g_code_bridge, code.data(), len);
+    g_code_bridge[len] = '\0';
+    g_code_bridge_str.assign(g_code_bridge);
+    return g_code_bridge_str;
 }
 
 std::string &vm::get_mutable_code()
 {
-    static std::string safe_mutable_bridge;
-    safe_mutable_bridge = m_cart.get_mutable_code();
-    return safe_mutable_bridge;
+    const std::string& code = m_cart.get_mutable_code();
+    size_t len = code.size();
+    if (len >= sizeof(g_code_bridge)) len = sizeof(g_code_bridge) - 1;
+    memcpy(g_code_bridge, code.data(), len);
+    g_code_bridge[len] = '\0';
+    g_mutable_code_bridge_str.assign(g_code_bridge);
+    return g_mutable_code_bridge_str;
 }
 
 
 u4mat2<128,128> const &vm::get_front_screen() const
 {
-    return m_front_buffer;
+    return get_current_screen();
 }
 
 u4mat2<128,128> const &vm::get_current_screen() const
 {
-    if (m_in_pause) return m_front_buffer;
-    if (m_ram.draw_state.misc_features.multi_screen)
-    {
-        if (m_multiscreen_current > 0 && m_multiscreen_current <= (int)m_multiscreens.size())
-            return *m_multiscreens[m_multiscreen_current - 1];
-    }
+    // Multiscreen disabled for memory savings
     return m_ram.hw_state.mapping_screen == 0 ? m_ram.gfx : m_ram.screen;
 }
 
@@ -532,7 +834,8 @@ u4mat2<128,128> &vm::get_current_screen()
 
 lol::ivec2 vm::get_screen_resolution() const
 {
-    return lol::ivec2(128 * m_multiscreens_x, 128 * m_multiscreens_y);
+    // Multiscreen disabled; always 128x128
+    return lol::ivec2(128, 128);
 }
 
 std::tuple<uint8_t *, size_t> vm::ram()
@@ -542,8 +845,8 @@ std::tuple<uint8_t *, size_t> vm::ram()
 
 std::tuple<uint8_t *, size_t> vm::rom()
 {
-    auto rom = m_cart.get_rom();
-    return std::make_tuple(&rom[0], sizeof(rom));
+    auto &rom = m_cart.get_rom();
+    return std::make_tuple((uint8_t*)&rom[0], rom.size());
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -654,9 +957,12 @@ bool vm::private_load(std::string name, opt<std::string> breadcrumb, opt<std::st
     if (breadcrumb.has_value() && (*breadcrumb).length() > 1)
     {
         breadcrumb_path bc;
-        bc.cart_path = previous_cart;
-        bc.title     = *breadcrumb;
-        bc.params    = params.has_value() ? *params : "";
+        strncpy(bc.cart_path, previous_cart.c_str(), sizeof(bc.cart_path) - 1);
+        bc.cart_path[sizeof(bc.cart_path) - 1] = '\0';
+        strncpy(bc.title, breadcrumb->c_str(), sizeof(bc.title) - 1);
+        bc.title[sizeof(bc.title) - 1] = '\0';
+        strncpy(bc.params, params.has_value() ? params->c_str() : "", sizeof(bc.params) - 1);
+        bc.params[sizeof(bc.params) - 1] = '\0';
         if (breadcrumbs_count < MAX_BREADCRUMBS)
             breadcrumbs_buf[breadcrumbs_count++] = bc;
     }
@@ -682,7 +988,7 @@ bool vm::load_cart(cart &target_cart, std::string const &filename)
         if (full_sd_path.rfind("/sd", 0) != 0) {
             full_sd_path = "/sd" + full_sd_path;
         }
-        FILE* f = fopen(full_sd_path.c_str(), "r");
+        FILE* f = fopen(full_sd_path.c_str(), "rb");
         if (f)
         {
             char magic[4];
@@ -693,7 +999,8 @@ bool vm::load_cart(cart &target_cart, std::string const &filename)
                 fread(&rom_size, 1, 4, f);
                 
                 fread(&m_ram, 1, rom_size > sizeof(m_ram) ? sizeof(m_ram) : rom_size, f);
-                ::memcpy(&target_cart.get_rom(), &m_ram, rom_size);
+                uint32_t copy_size = rom_size > 17408 ? 17408 : rom_size;
+                ::memcpy(target_cart.get_rom().data(), &m_ram, copy_size);
                 
                 target_cart.init_filename(filename);
                 fclose(f);
@@ -742,7 +1049,7 @@ bool vm::load_cart(cart &target_cart, std::string const &filename)
         {
             auto reload_cart = std::make_shared<cart>();
             reload_cart->load(name_cstore);
-            target_cart.set_from_ram(reload_cart->get_rom(), 0, 0, offsetof(memory, code));
+            target_cart.set_from_ram(reload_cart->get_rom().data(), 0, 0, 0x4300);
         }
     }
     return has_loaded;
@@ -796,6 +1103,7 @@ bool vm::step(float /* seconds */)
     }
 
     bool ret = false;
+    lua_gc(m_lua, LUA_GCCOLLECT, 0);
     lua_getglobal(m_lua, "__z8_tick");
     int status = lua_pcall(m_lua, 0, 1, 0);
     if (status != LUA_OK)
@@ -898,8 +1206,7 @@ void vm::api_run()
     ::memset(&m_state.mouse,  0, sizeof(m_state.mouse));
 
     m_ram.draw_state.misc_features.multi_screen = false;
-    m_multiscreens_x = 1;
-    m_multiscreens_y = 1;
+    // Multiscreen disabled; no need to set x/y
 
     /* Ensure __z8_run_cart is defined — if not, execute BIOS bytecode first */
     lua_getglobal(m_lua, "__z8_run_cart");
@@ -1002,79 +1309,28 @@ void vm::api_run()
                   (unsigned int)ESP.getFreeHeap(),
                   (unsigned int)ESP.getMaxAllocHeap());
 
-    bool game_loaded = false;
-    bool is_pc8c = lol::ends_with(lol::tolower(m_cart.get_filename()), ".pc8c") ||
-                  lol::ends_with(lol::tolower(m_cart.get_filename()), ".p8c");
-    if (is_pc8c)
-    {
-#if defined(ARDUINO)
-        std::string full_sd_path = m_cart.get_filename();
-        if (full_sd_path.rfind("/sd", 0) != 0) {
-            full_sd_path = "/sd" + full_sd_path;
-        }
-        FILE* f = fopen(full_sd_path.c_str(), "r");
-        if (f)
-        {
-            char magic[4];
-            if (fread(magic, 1, 4, f) == 4 && strncmp(magic, "PC8C", 4) == 0)
-            {
-                fseek(f, 32, SEEK_CUR); // skip name
-                uint32_t rom_size = 0;
-                fread(&rom_size, 1, 4, f);
-                if (rom_size > sizeof(m_ram)) {
-                    rom_size = sizeof(m_ram);
-                }
-                fread(&m_ram, 1, rom_size, f);
-                ::memcpy(&m_cart.get_rom(), &m_ram, rom_size);
-                Serial.printf("[DEBUG] SD PC8C api_run load: ROM loaded (%u bytes)\n", rom_size);
-                
-                uint32_t bc_size = 0;
-                fread(&bc_size, 1, 4, f);
-                
-                Serial.printf("[DEBUG] SD PC8C stream compile. bc_size=%u, free heap=%u\n", bc_size, (unsigned)ESP.getFreeHeap());
-                
-                struct SdBytecodeReaderContext {
-                    FILE* file;
-                    uint32_t remaining;
-                    char buffer[256];
-                };
-                SdBytecodeReaderContext ctx;
-                ctx.file = f;
-                ctx.remaining = bc_size;
-                
-                auto sd_bc_reader = [](lua_State* L, void* ud, size_t* size) -> const char* {
-                    SdBytecodeReaderContext* c = (SdBytecodeReaderContext*)ud;
-                    if (c->remaining == 0) { *size = 0; return nullptr; }
-                    uint32_t chunk = c->remaining < sizeof(c->buffer) ? c->remaining : sizeof(c->buffer);
-                    size_t read_bytes = fread(c->buffer, 1, chunk, c->file);
-                    if (read_bytes == 0) { *size = 0; return nullptr; }
-                    c->remaining -= read_bytes;
-                    *size = read_bytes;
-                    return c->buffer;
-                };
-                
-                compile_status = lua_load(m_lua, sd_bc_reader, &ctx, "@game", "b");
-                fclose(f);
-                Serial.printf("[DEBUG] SD PC8C bytecode load status=%d. Free heap=%u\n", compile_status, (unsigned)ESP.getFreeHeap());
-                game_loaded = (compile_status == LUA_OK);
-            }
-            else
-            {
-                fclose(f);
-            }
-        }
-#else
-        // Desktop
-#endif
+    Serial.println("=== LISTING ALL PARTITIONS ===");
+    esp_partition_iterator_t it = esp_partition_find(ESP_PARTITION_TYPE_ANY, ESP_PARTITION_SUBTYPE_ANY, NULL);
+    while (it != NULL) {
+        const esp_partition_t* p = esp_partition_get(it);
+        Serial.printf("  Name: %s, Type: 0x%02x, SubType: 0x%02x, Offset: 0x%08x, Size: 0x%08x\n",
+                      p->label, p->type, p->subtype, (unsigned int)p->address, (unsigned int)p->size);
+        it = esp_partition_next(it);
     }
+    Serial.println("==============================");
 
+    bool game_loaded = false;
     // game パーティションから mmap を試みる
     const esp_partition_t* game_part = esp_partition_find_first(
         ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_ANY, "game");
 
     bool is_bios = (m_cart.get_filename() == "/bios.p8" || m_cart.get_filename() == "bios.p8");
-    if (game_part && !is_bios)
-    {
+    bool is_pc8c = lol::ends_with(lol::tolower(m_cart.get_filename()), ".pc8c") ||
+                  lol::ends_with(lol::tolower(m_cart.get_filename()), ".p8c");
+
+    auto try_mmap_load = [&](uint32_t expected_bc_size) -> bool {
+        if (!game_part || is_bios) return false;
+        
         spi_flash_mmap_handle_t game_map_handle;
         const void* game_map_ptr = nullptr;
         esp_err_t err = esp_partition_mmap(game_part, 0, game_part->size,
@@ -1094,10 +1350,30 @@ void vm::api_run()
                     req_base = req_base.substr(last_slash + 1);
                 }
 
-                if (req_base == cached_name)
+                // Remove extensions from both to allow matching e.g. .pc8c from SD with .p8 in flash
+                size_t req_dot = req_base.find_last_of('.');
+                if (req_dot != std::string::npos) {
+                    req_base = req_base.substr(0, req_dot);
+                }
+
+                std::string cached_base = cached_name;
+                size_t cached_dot = cached_base.find_last_of('.');
+                if (cached_dot != std::string::npos) {
+                    cached_base = cached_base.substr(0, cached_dot);
+                }
+
+                if (req_base == cached_base)
                 {
                     uint32_t rom_size = *(const uint32_t*)(base + 36);
                     uint32_t bc_size  = *(const uint32_t*)(base + 40 + rom_size);
+
+                    if (expected_bc_size != 0 && bc_size != expected_bc_size)
+                    {
+                        Serial.printf("[DEBUG] game partition PC8C size mismatch: cached bc=%u, expected=%u\n", bc_size, expected_bc_size);
+                        spi_flash_munmap(game_map_handle);
+                        return false;
+                    }
+
                     const char* bc    = base + 40 + rom_size + 4;
 
                     Serial.printf("[DEBUG] game partition PC8C matched: %s, rom=%u bc=%u\n", cached_name, rom_size, bc_size);
@@ -1107,7 +1383,8 @@ void vm::api_run()
                         rom_size = sizeof(m_ram);
                     }
                     ::memcpy(&m_ram, base + 40, rom_size);
-                    ::memcpy(&m_cart.get_rom(), base + 40, rom_size);
+                    uint32_t copy_size = rom_size > 17408 ? 17408 : rom_size;
+                    ::memcpy(m_cart.get_rom().data(), base + 40, copy_size);
 
                     // mmap された bytecode を lua_load で直接ロード（コピーなし！）
                     struct MmapReader {
@@ -1130,10 +1407,20 @@ void vm::api_run()
                         return r->buf;
                     };
 
+                    int old_stepmul = lua_gc(m_lua, LUA_GCSETSTEPMUL, 2000);
+                    int old_pause   = lua_gc(m_lua, LUA_GCSETPAUSE, 25);
                     compile_status = lua_load(m_lua, mmap_reader, &mr, "@game", "b");
+                    lua_gc(m_lua, LUA_GCSETSTEPMUL, old_stepmul);
+                    lua_gc(m_lua, LUA_GCSETPAUSE,   old_pause);
                     Serial.printf("[DEBUG] game bytecode load status=%d. Free heap=%u\n",
                                   compile_status, (unsigned int)ESP.getFreeHeap());
-                    game_loaded = true;
+                    // Force GC after mmap bytecode load
+                    if (compile_status == LUA_OK) {
+                        lua_gc(m_lua, LUA_GCCOLLECT, 0);
+                        Serial.printf("[DEBUG] GC after mmap load. Free heap=%u\n", (unsigned)ESP.getFreeHeap());
+                    }
+                    spi_flash_munmap(game_map_handle);
+                    return (compile_status == LUA_OK);
                 }
                 else
                 {
@@ -1155,17 +1442,105 @@ void vm::api_run()
         {
             Serial.printf("[WARN] game partition mmap failed: 0x%x\n", err);
         }
+        return false;
+    };
+
+    uint32_t expected_bc_size = 0;
+    if (is_pc8c)
+    {
+#if defined(ARDUINO)
+        std::string full_sd_path = m_cart.get_filename();
+        if (full_sd_path.rfind("/sd", 0) != 0) {
+            full_sd_path = "/sd" + full_sd_path;
+        }
+        FILE* f = fopen(full_sd_path.c_str(), "rb");
+        if (f)
+        {
+            char magic[4];
+            if (fread(magic, 1, 4, f) == 4 && strncmp(magic, "PC8C", 4) == 0)
+            {
+                fseek(f, 32, SEEK_CUR); // skip name
+                uint32_t rom_size = 0;
+                fread(&rom_size, 1, 4, f);
+                fseek(f, rom_size, SEEK_CUR); // skip rom
+                fread(&expected_bc_size, 1, 4, f);
+            }
+            fclose(f);
+        }
+#endif
+    }
+
+    game_loaded = try_mmap_load(expected_bc_size);
+
+    if (is_pc8c && !game_loaded)
+    {
+#if defined(ARDUINO)
+        if (game_part) {
+            std::string full_sd_path = m_cart.get_filename();
+            if (full_sd_path.rfind("/sd", 0) != 0) {
+                full_sd_path = "/sd" + full_sd_path;
+            }
+            FILE* f = fopen(full_sd_path.c_str(), "rb");
+            if (f)
+            {
+                char magic[4];
+                if (fread(magic, 1, 4, f) == 4 && strncmp(magic, "PC8C", 4) == 0)
+                {
+                    Serial.println("[DEBUG] Copying SD PC8C directly to game partition...");
+                    fseek(f, 0, SEEK_END);
+                    long total_size = ftell(f);
+                    fseek(f, 0, SEEK_SET);
+
+                    esp_err_t er = esp_partition_erase_range(game_part, 0, game_part->size);
+                    if (er == ESP_OK)
+                    {
+                        char write_buf[512];
+                        uint32_t offset = 0;
+                        bool write_ok = true;
+                        while (offset < total_size)
+                        {
+                            size_t to_read = (total_size - offset) < sizeof(write_buf) ? (total_size - offset) : sizeof(write_buf);
+                            size_t r = fread(write_buf, 1, to_read, f);
+                            if (r == 0) break;
+                            esp_err_t werr = esp_partition_write(game_part, offset, write_buf, r);
+                            if (werr != ESP_OK) {
+                                Serial.printf("[ERROR] SD to flash copy failed at offset %u: 0x%x\n", offset, werr);
+                                write_ok = false;
+                                break;
+                            }
+                            offset += r;
+                        }
+                        if (write_ok) {
+                            Serial.printf("[DEBUG] Copy success. Copied %u bytes to game partition.\n", offset);
+                        }
+                    }
+                    else
+                    {
+                        Serial.printf("[ERROR] Failed to erase game partition: 0x%x\n", er);
+                    }
+                }
+                fclose(f);
+
+                // コピー完了後、gameパーティションから再ロード
+                game_loaded = try_mmap_load(expected_bc_size);
+            }
+        }
+#else
+        // Desktop
+#endif
     }
     else
     {
         if (is_bios) {
             Serial.println("[DEBUG] bios.p8 requested, skipping game partition check.");
         } else {
-            Serial.println("[WARN] 'game' partition not found.");
+            if (!game_loaded) {
+                Serial.println("[WARN] 'game' partition not found.");
+            }
         }
     }
 
-    if (!game_loaded)
+    if (!game_loaded && !is_pc8c)
     {
         // ── SDカードの.p8をオンデバイスコンパイル → gameパーティションにキャッシュ書き込み ──
         std::string sd_path = m_cart.get_filename(); // e.g. "/jelpi.p8"
@@ -1188,7 +1563,7 @@ void vm::api_run()
             enum class Sec { NONE, LUA, GFX, MAP, GFF, MUSIC, SFX, OTHER };
             Sec sec = Sec::NONE;
             bool hdr_done = false;
-            size_t gfx_off=0, map_off=0x2000, gff_off=0x3000, mus_off=0x3100, sfx_off=0x3200;
+            size_t gfx_off=0, map_off=0x2000, gff_off=0x3000, sfx_off=0x3200, music_pattern_id=0, sfx_index=0;
             char linebuf[512];
             auto hexval = [](char c) -> int {
                 if (c>='0'&&c<='9') return c-'0';
@@ -1219,27 +1594,81 @@ void vm::api_run()
                     if (sec==Sec::GFX)   { p_off=&gfx_off; max_off=0x2000; swap=true; }
                     else if (sec==Sec::MAP)   { p_off=&map_off; max_off=0x3000; }
                     else if (sec==Sec::GFF)   { p_off=&gff_off; max_off=0x3100; }
-                    else if (sec==Sec::SFX)   { p_off=&sfx_off; max_off=0x4400; }
 
                     if (sec == Sec::MUSIC) {
                         const char* p = linebuf;
-                        int pat_hi = hexval(p[0]);
-                        int pat_lo = hexval(p[1]);
-                        if (pat_hi >= 0 && pat_lo >= 0) {
-                            int pattern_id = (pat_hi << 4) | pat_lo;
-                            p += 2;
-                            while (*p && hexval(*p) < 0) p++;
-                            size_t target_off = 0x3100 + 4 * pattern_id;
-                            for (int ch = 0; ch < 4; ++ch) {
-                                if (!p[0] || !p[1]) break;
-                                int hi = hexval(p[0]);
-                                int lo = hexval(p[1]);
-                                if (hi >= 0 && lo >= 0) {
+                        while (*p && isspace((unsigned char)*p)) p++;
+                        if (*p && music_pattern_id < 64) {
+                            int flags_hi = hexval(p[0]);
+                            int flags_lo = hexval(p[1]);
+                            if (flags_hi >= 0 && flags_lo >= 0) {
+                                int flags = (flags_hi << 4) | flags_lo;
+                                p += 2;
+                                while (*p && hexval(*p) < 0) p++;
+                                size_t target_off = 0x3100 + 4 * music_pattern_id;
+                                for (int ch = 0; ch < 4; ++ch) {
+                                    while (*p && hexval(*p) < 0) p++;
+                                    int sfx_id = 0x40; // Default: empty (0x40 = 64)
+                                    if (p[0] && p[1]) {
+                                        int sfx_hi = hexval(p[0]);
+                                        int sfx_lo = hexval(p[1]);
+                                        if (sfx_hi >= 0 && sfx_lo >= 0) {
+                                            sfx_id = (sfx_hi << 4) | sfx_lo;
+                                            p += 2;
+                                        }
+                                    }
+                                    uint8_t flag_bit = (flags >> ch) & 1;
+                                    uint8_t val = (sfx_id & 0x7f) | (flag_bit << 7);
                                     if (target_off < 0x3200) {
-                                        rom_dest[target_off++] = (uint8_t)((hi << 4) | lo);
+                                        rom_dest[target_off++] = val;
                                     }
                                 }
+                                music_pattern_id++;
+                            }
+                        }
+                    } else if (sec == Sec::SFX) {
+                        const char* p = linebuf;
+                        while (*p && isspace((unsigned char)*p)) p++;
+                        if (*p && sfx_index < 64) {
+                            uint8_t current_sfx[84] = {0};
+                            int current_sfx_size = 0;
+                            while (p[0] && p[1] && current_sfx_size < 84) {
+                                int hi = hexval(p[0]);
+                                int lo = hexval(p[1]);
+                                if (hi < 0 || lo < 0) { p++; continue; }
+                                current_sfx[current_sfx_size++] = (uint8_t)((hi << 4) | lo);
                                 p += 2;
+                            }
+
+                            if (current_sfx_size >= 84) {
+                                size_t target_sfx_off = 0x3200 + 68 * sfx_index;
+                                for (int j = 0; j < 32; ++j) {
+                                    uint32_t ins = ((uint32_t)current_sfx[4 + j * 5 / 2 + 0] << 16)
+                                                 | ((uint32_t)current_sfx[4 + j * 5 / 2 + 1] << 8)
+                                                 | ((uint32_t)current_sfx[4 + j * 5 / 2 + 2]);
+                                    ins = (j & 1) ? ins & 0xfffff : ins >> 4;
+
+                                    uint8_t key        = (ins & 0x3f000) >> 12;
+                                    uint8_t instrument = (ins & 0x700)   >> 8;
+                                    uint8_t volume     = (ins & 0x70)    >> 4;
+                                    uint8_t effect     =  ins & 0x7;
+                                    uint8_t custom     = (ins & 0x800)   >> 11;
+
+                                    uint16_t note_val = (key & 0x3f)
+                                                      | ((instrument & 0x07) << 6)
+                                                      | ((volume & 0x07) << 9)
+                                                      | ((effect & 0x07) << 12)
+                                                      | ((custom & 0x01) << 15);
+
+                                    rom_dest[target_sfx_off + j * 2 + 0] = note_val & 0xff;
+                                    rom_dest[target_sfx_off + j * 2 + 1] = (note_val >> 8) & 0xff;
+                                }
+                                rom_dest[target_sfx_off + 64] = current_sfx[0]; // filters
+                                rom_dest[target_sfx_off + 65] = current_sfx[1]; // speed
+                                rom_dest[target_sfx_off + 66] = current_sfx[2]; // loop_start
+                                rom_dest[target_sfx_off + 67] = current_sfx[3]; // loop_end
+
+                                sfx_index++;
                             }
                         }
                     } else if (p_off) {
@@ -1337,6 +1766,12 @@ void vm::api_run()
 
                 Serial.printf("[DEBUG] Stream compile done. status=%d. Free heap=%u\n", compile_status, (unsigned)ESP.getFreeHeap());
 
+                // Force aggressive GC after bytecode compilation to reclaim memory
+                if (compile_status == LUA_OK) {
+                    lua_gc(m_lua, LUA_GCCOLLECT, 0);
+                    Serial.printf("[DEBUG] GC after compile. Free heap=%u\n", (unsigned)ESP.getFreeHeap());
+                }
+
                 if (compile_status == LUA_OK && game_part) {
                     Serial.println("[DEBUG] Writing bytecode to game partition...");
                     
@@ -1395,10 +1830,10 @@ void vm::api_run()
                         Serial.printf("[WARN] game partition erase failed: 0x%x, running from RAM\n", er);
                     }
 
-                    ::memcpy(&m_cart.get_rom(), &m_ram, ROM_SIZE);
+                    ::memcpy(m_cart.get_rom().data(), &m_ram, ROM_SIZE);
                     game_loaded = true;
                 } else if (compile_status == LUA_OK) {
-                    ::memcpy(&m_cart.get_rom(), &m_ram, ROM_SIZE);
+                    ::memcpy(m_cart.get_rom().data(), &m_ram, ROM_SIZE);
                     game_loaded = true;
                 }
             }
@@ -1519,11 +1954,11 @@ void vm::api_reload(int16_t in_dst, int16_t in_src, opt<int16_t> in_size, opt<st
             name += ".p8";
         auto reload_cart = std::make_shared<cart>();
         load_cart(*reload_cart, name);
-        ::memcpy(&m_ram[dst], &reload_cart->get_rom()[src], amount);
+        ::memcpy(&m_ram[dst], reload_cart->get_rom().data() + src, amount);
     }
     else
     {
-        ::memcpy(&m_ram[dst], &m_cart.get_rom()[src], amount);
+        ::memcpy(&m_ram[dst], m_cart.get_rom().data() + src, amount);
     }
 
     dst  += amount;
@@ -1554,12 +1989,12 @@ void vm::api_cstore(int16_t in_dst, int16_t in_src, opt<int16_t> in_size, opt<st
             name += ".p8";
         auto reload_cart = std::make_shared<cart>();
         load_cart(*reload_cart, name);
-        reload_cart->set_from_ram(m_ram, dst, src, size);
+        reload_cart->set_from_ram((const uint8_t*)&m_ram, dst, src, size);
         save_cart(*reload_cart, reload_cart->get_filename());
     }
     else
     {
-        m_cart.set_from_ram(m_ram, dst, src, size);
+        m_cart.set_from_ram((const uint8_t*)&m_ram, dst, src, size);
         save_cart(m_cart, m_cart.get_filename());
     }
 
@@ -1782,13 +2217,12 @@ var<bool, int16_t, fix32, std::string, std::nullptr_t> vm::api_stat(int16_t id)
     }
 
     if (id == 1 || id == 2) return fix32(m_instructions / float(m_max_instructions));
-    if (id == 3) return int16_t(m_ram.draw_state.misc_features.multi_screen ? m_multiscreen_current : 0);
+    if (id == 3) return int16_t(0); // Multiscreen disabled
     if (id == 4) return std::string();
     if (id == 5) return int16_t(PICO8_VERSION);
     if (id == 6) { if (breadcrumbs_count > 0) return breadcrumbs_buf[breadcrumbs_count-1].params; return ""; }
     if (id == 7 || id == 8 || id == 9) return int16_t(30);
-    if (id == 11) return int16_t(m_ram.draw_state.misc_features.multi_screen ?
-                                  m_multiscreens_x * m_multiscreens_y : 1);
+    if (id == 11) return int16_t(1); // Multiscreen disabled, always 1
     if (id >= 12 && id <= 15) return int16_t(0);
 
     if ((id >= 16 && id <= 26) || (id >= 46 && id <= 56))
@@ -1943,8 +2377,10 @@ void vm::api_printh(rich_string str, opt<std::string> filename, opt<bool> overwr
 
 void vm::fill_metadata(cart &metadata_cart)
 {
-    m_metadata_title  = metadata_cart.get_title();
-    m_metadata_author = metadata_cart.get_author();
+    strncpy(m_metadata_title, metadata_cart.get_title().c_str(), sizeof(m_metadata_title) - 1);
+    m_metadata_title[sizeof(m_metadata_title) - 1] = '\0';
+    strncpy(m_metadata_author, metadata_cart.get_author().c_str(), sizeof(m_metadata_author) - 1);
+    m_metadata_author[sizeof(m_metadata_author) - 1] = '\0';
     auto &label = metadata_cart.get_label();
     if (label.size() >= LABEL_WIDTH * LABEL_HEIGHT)
     {
@@ -2049,19 +2485,8 @@ void vm::add_extcmd(std::string const &name, std::function<void(std::string cons
 
 void vm::api_map_display(int16_t id)
 {
-    if (!m_ram.draw_state.misc_features.multi_screen) return;
-    m_multiscreen_current = id;
-
-    if (m_multiscreen_current > 0)
-    {
-        m_multiscreens_x = std::max(m_multiscreens_x, 2);
-        if (m_multiscreen_current >= 2)  m_multiscreens_y = std::max(m_multiscreens_y, 2);
-        if (m_multiscreen_current >= 4)  m_multiscreens_x = std::max(m_multiscreens_x, 4);
-
-        int target_screen = m_multiscreen_current - 1;
-        while (target_screen >= (int)m_multiscreens.size())
-            m_multiscreens.push_back(std::make_shared<u4mat2<128,128>>());
-    }
+    // Multiscreen disabled, no-op
+    (void)id;
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -2170,13 +2595,13 @@ bool vm::save(bool force)
 
 bool vm::load_cartdata()
 {
-    if (m_cartdata.empty()) return false;
+    if (strlen(m_cartdata) == 0) return false;
     return m_savefile.read_save(get_path_save(m_cartdata), m_ram.persistent);
 }
 
 bool vm::save_cartdata(bool force)
 {
-    if (m_cartdata.empty()) return false;
+    if (strlen(m_cartdata) == 0) return false;
     if (!m_savefile.tick(force)) return true;
     return m_savefile.write_save(get_path_save(m_cartdata), m_ram.persistent);
 }
@@ -2271,15 +2696,17 @@ std::string vm::get_path_save(std::string cart_name)
 void vm::set_path_active_dir(std::string filename)
 {
     size_t found = filename.find_last_of("/\\");
-    m_path_active_dir = (found != std::string::npos) ?
-                        filename.substr(0, found) : "/cartridges";
+    if (found != std::string::npos)
+        snprintf(m_path_active_dir, sizeof(m_path_active_dir), "%.*s", (int)found, filename.c_str());
+    else
+        snprintf(m_path_active_dir, sizeof(m_path_active_dir), "/cartridges");
 }
 
 std::string vm::get_path_active_dir()
 {
-    if (m_path_active_dir.empty())
-        m_path_active_dir = get_default_carts_dir();
-    return m_path_active_dir;
+    if (strlen(m_path_active_dir) == 0)
+        set_path_active_dir(get_default_carts_dir());
+    return std::string(m_path_active_dir);
 }
 
 std::string vm::get_default_carts_dir()

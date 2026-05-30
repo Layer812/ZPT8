@@ -26,7 +26,7 @@ void vm::private_end_render()
 {
     if (m_in_pause) return;
 
-    memcpy(&m_front_buffer, &get_current_screen(), sizeof(m_front_buffer));
+    // Double buffering disabled: do not copy to m_front_buffer
     m_front_draw_state = m_ram.draw_state;
     m_front_hw_state = m_ram.hw_state;
 }
@@ -42,26 +42,11 @@ void vm::render(lol::u8vec4 *screen) const
         lut[128 + c] = palette::get8(16 + c);
     }
 
+    // Multiscreen disabled for memory savings; always render single screen
     for (int y = 0; y < 128; ++y)
     {
         for (int x = 0; x < 128; ++x)
             *screen++ = lut[pixel(x, y, get_front_screen())];
-        if (m_multiscreens_x > 1)
-        {
-            for (int sx = 1; sx < m_multiscreens_x; ++sx)
-                for (int x = 0; x < 128; ++x)
-                    *screen++ = lut[pixel(x, y, *m_multiscreens[sx - 1])];
-        }
-    }
-    if (m_multiscreens_y > 1)
-    {
-        for (int sy = 1; sy < m_multiscreens_y; ++sy)
-            for (int y = 0; y < 128; ++y)
-            {
-                for (int sx = 0; sx < m_multiscreens_x; ++sx)
-                    for (int x = 0; x < 128; ++x)
-                        *screen++ = lut[pixel(x, y, *m_multiscreens[sx + sy * m_multiscreens_x - 1])];
-            }
     }
 }
 
@@ -149,41 +134,95 @@ bool vm::render_fast(uint16_t *dest) const
 {
     if (m_in_pause) return false;
 
-    // Check if standard screen mode (no rotation, mirror, stretch, raster effects, multi-screen)
     auto &draw_state = m_front_draw_state;
     auto &hw_state = m_front_hw_state;
 
-    if (draw_state.screen_mode != 0 || hw_state.raster.mode != 0 || m_multiscreens_x > 1 || m_multiscreens_y > 1)
-    {
-        return false; // Fallback to slow path
-    }
-
-    // Build the RGB565 look-up table for the 16 screen palette colors
+    // Build the RGB565 look-up table for all 128+16 palette colors
     // Pre-calculate shifted and byte-swapped RGB565 values
-    uint16_t palette_rgb565[16];
-    for (int i = 0; i < 16; ++i)
+    uint16_t palette_rgb565[128 + 16];
+    for (int c = 0; c < 16; ++c)
     {
-        // Get the active color index mapped by screen palette
-        uint8_t c = draw_state.screen_palette[i];
-        
-        // Get the standard PICO-8 RGBA8888 color
         lol::u8vec4 col = palette::get8(c);
-        
-        // Convert to RGB565
         uint16_t rgb = ((col.r >> 3) << 11) | ((col.g >> 2) << 5) | (col.b >> 3);
-        
-        // Swap bytes for ESP32 big-endian display transmission
-        palette_rgb565[i] = (rgb >> 8) | (rgb << 8);
+        palette_rgb565[c] = (rgb >> 8) | (rgb << 8);
+        lol::u8vec4 col2 = palette::get8(16 + c);
+        uint16_t rgb2 = ((col2.r >> 3) << 11) | ((col2.g >> 2) << 5) | (col2.b >> 3);
+        palette_rgb565[128 + c] = (rgb2 >> 8) | (rgb2 << 8);
     }
 
-    // Directly read from the screen VRAM nibble buffer (128x64 bytes)
-    // and write RGB565 values into dest
-    const uint8_t *src = &get_front_screen().data[0][0];
-    for (int i = 0; i < 8192; ++i)
+    uint8_t const& mode = draw_state.screen_mode;
+    uint8_t const raster_mode = hw_state.raster.mode;
+    bool has_raster = (raster_mode == 0x10) || ((raster_mode & 0x30) == 0x30);
+
+    // Fast path: standard mode, no raster (multiscreen always disabled)
+    bool fast_mode = (mode == 0 && !has_raster);
+
+    if (fast_mode)
     {
-        uint8_t val = src[i];
-        *dest++ = palette_rgb565[val & 0x0f]; // Left pixel (lower nibble)
-        *dest++ = palette_rgb565[val >> 4];   // Right pixel (upper nibble)
+        // Build screen palette LUT (16 entries)
+        uint16_t screen_pal[16];
+        for (int i = 0; i < 16; ++i)
+            screen_pal[i] = palette_rgb565[draw_state.screen_palette[i]];
+
+        const uint8_t *src = &get_front_screen().data[0][0];
+        for (int i = 0; i < 8192; ++i)
+        {
+            uint8_t val = src[i];
+            *dest++ = screen_pal[val & 0x0f];
+            *dest++ = screen_pal[val >> 4];
+        }
+    }
+    else
+    {
+        // Slow path: handles rotation, mirror, stretch, flip, raster, multi-screen
+        // Writes directly to uint16_t* dest (no intermediate RGBA buffer)
+        auto get_pixel_rgb565 = [&](int x, int y, const u4mat2<128,128>& screen) {
+            // Apply screen mode transformations
+            int tx = x, ty = y;
+            if ((mode & 0xbc) == 0x84)
+            {
+                if (mode & 1) std::swap(tx, ty);
+                tx = mode & 2 ? 127 - tx : tx;
+                ty = ((mode + 1) & 2) ? 127 - ty : ty;
+            }
+            else
+            {
+                tx = (mode & 0xbd) == 0x05 ? std::min(tx, 127 - tx)
+                    : (mode & 0xbd) == 0x01 ? tx / 2
+                    : (mode & 0xbd) == 0x81 ? 127 - tx : tx;
+                ty = (mode & 0xbe) == 0x06 ? std::min(ty, 127 - ty)
+                    : (mode & 0xbe) == 0x02 ? ty / 2
+                    : (mode & 0xbe) == 0x82 ? 127 - ty : ty;
+            }
+
+            int c = screen.get(tx, ty);
+
+            // Apply raster mode
+            if (raster_mode == 0x10)
+            {
+                if (hw_state.raster.bits[ty])
+                    c = hw_state.raster.palette[c];
+            }
+            else if ((raster_mode & 0x30) == 0x30)
+            {
+                if ((raster_mode & 0x0f) == c)
+                {
+                    int c2 = (ty / 8 + (hw_state.raster.bits[ty] ? 1 : 0)) % 16;
+                    c = hw_state.raster.palette[c2];
+                }
+            }
+
+            // Apply screen palette
+            c = draw_state.screen_palette[c];
+            return palette_rgb565[c];
+        };
+
+        // Single screen only (multiscreen disabled for memory savings)
+        for (int y = 0; y < 128; ++y)
+        {
+            for (int x = 0; x < 128; ++x)
+                *dest++ = get_pixel_rgb565(x, y, get_front_screen());
+        }
     }
 
     return true;

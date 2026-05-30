@@ -223,8 +223,8 @@ void vm::update_sfx_state(state::sfx_state& cur_sfx, state::synth_param &new_syn
 
 void vm::get_audio(void *inbuffer, size_t in_bytes)
 {
-    int16_t* buffer = (int16_t*)inbuffer;
-    int const in_frames = in_bytes / 2;
+    uint8_t* buffer = (uint8_t*)inbuffer;
+    int const in_frames = in_bytes; // for 8-bit, 1 byte = 1 frame
 
     using std::fabs, std::floor, std::max;
 
@@ -234,7 +234,7 @@ void vm::get_audio(void *inbuffer, size_t in_bytes)
     float inv_frames_per_second[4];
     for (int chan = 0; chan < 4; ++chan)
     {
-        inv_frames_per_second[chan] = ((m_ram.hw_state.half_rate & (1 << chan)) ? 0.5f : 1.0f) / 22050.0f;
+        inv_frames_per_second[chan] = ((m_ram.hw_state.half_rate & (1 << chan)) ? 0.5f : 1.0f) / 11025.0f;
     }
     float const offset_per_second_c0 = 22050.0f / 183.0f;
 
@@ -404,20 +404,20 @@ void vm::get_audio(void *inbuffer, size_t in_bytes)
             float value_damp2 = channel_state.damp2.run(value);
             if (chan_damp2_value > 0.0f) value = lol::mix(value, value_damp2, chan_damp2_value);
 
-            int16_t sample = (int16_t)(32767.99f * std::clamp(value,-0.99f,0.99f));
+            int8_t sample = (int8_t)(127.99f * std::clamp(value,-0.99f,0.99f));
 
             if (m_ram.hw_state.distort & (1 << chan))
             {
-                sample = sample / 0x1000 * 0x1249;
+                sample = sample / 16 * 18;
             }
             else if (m_ram.hw_state.distort & (1 << (chan + 4)))
             {
-                sample = (sample - (sample < 0 ? 0x1000: 0)) / 0x1000 * 0x1249;
+                sample = (sample - (sample < 0 ? 16 : 0)) / 16 * 18;
             }
             channel_mix += sample;
         }
             
-        buffer[i] = (int16_t)(std::clamp(channel_mix, -32767.9f, 32767.9f));
+        buffer[i] = (uint8_t)(std::clamp(channel_mix + 128.0f, 0.0f, 255.0f));
     }
 }
 
@@ -503,13 +503,26 @@ void vm::set_music_pattern(int pattern)
 
     int16_t duration_looping = -1;
     int16_t duration_no_loop = -1;
+    
+#if defined(ARDUINO)
+    Serial.printf("[DEBUG] set_music_pattern(%d) called\n", pattern);
+#endif
+
     for (int i = 0; i < 4; ++i)
     {
         int n = m_ram.song[pattern].sfx(i);
+#if defined(ARDUINO)
+        Serial.printf("  ch %d: song sfx = 0x%02X (sfx_id=%d, mute=%s)\n", 
+                      i, n, n & 0x3f, (n & 0x40) ? "true" : "false");
+#endif
         if (n & 0x40)
             continue;
 
         auto &sfx = m_ram.sfx[n & 0x3f];
+#if defined(ARDUINO)
+        Serial.printf("    sfx[%d]: speed=%d loop_start=%d loop_end=%d\n",
+                      n & 0x3f, sfx.speed, sfx.loop_start, sfx.loop_end);
+#endif
         bool has_loop = sfx.loop_end > 0 && sfx.loop_end > sfx.loop_start;
         if (has_loop)
         {
@@ -529,6 +542,10 @@ void vm::set_music_pattern(int pattern)
     }
 
     int16_t duration = duration_no_loop > 0 ? duration_no_loop : duration_looping;
+#if defined(ARDUINO)
+    Serial.printf("  calculated duration = %d (no_loop=%d, looping=%d)\n", 
+                  duration, duration_no_loop, duration_looping);
+#endif
     if (duration <= 0)
     {
         m_state.music.pattern = -1;

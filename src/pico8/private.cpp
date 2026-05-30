@@ -257,18 +257,19 @@ bool vm::private_is_api(std::string str)
 opt<bool> vm::private_cartdata(opt<std::string> str)
 {
     if (!str)
-        return m_cartdata.size() > 0;
+        return strlen(m_cartdata) > 0;
 
-    if (!str->size())
+    if (str->empty())
     {
-        m_cartdata = "";
+        m_cartdata[0] = '\0';
         return std::nullopt;
     }
 
-    m_cartdata = *str;
+    strncpy(m_cartdata, str->c_str(), sizeof(m_cartdata) - 1);
+    m_cartdata[sizeof(m_cartdata) - 1] = '\0';
     
     char buf[64];
-    std::snprintf(buf, sizeof(buf), "cartdata(\"%s\")", m_cartdata.c_str());
+    std::snprintf(buf, sizeof(buf), "cartdata(\"%s\")", m_cartdata);
     private_stub(std::string(buf));
 
     return load_cartdata();

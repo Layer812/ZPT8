@@ -22,7 +22,7 @@
 
 namespace z8::pico8
 {
-extern uint8_t g_bios_gfx[8192];
+extern const uint8_t* g_bios_gfx_ptr;
 
 /* Return color bits for use with set_pixel().
  *  - bits 0x0000ffff: fillp pattern
@@ -764,7 +764,7 @@ tup<opt<fix32>, opt<fix32> > vm::api_print(opt<rich_string> str, opt<fix32> opt_
                                 int py = font_y + dy;
                                 if (px >= 0 && px < 128 && py >= 0 && py < 128)
                                 {
-                                    uint8_t val = g_bios_gfx[py * 64 + px / 2];
+                                    uint8_t val = g_bios_gfx_ptr[py * 64 + px / 2];
                                     is_on = (bool)((px & 1) ? (val >> 4) : (val & 0x0f));
                                 }
                             }

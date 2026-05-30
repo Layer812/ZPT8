@@ -100,9 +100,9 @@ struct state
 
 struct breadcrumb_path
 {
-    std::string cart_path;
-    std::string title;
-    std::string params;
+    char cart_path[128];
+    char title[64];
+    char params[64];
 };
 
 // ──────────────────────────────────────────────────────────────
@@ -156,7 +156,7 @@ virtual std::string       &get_mutable_code();
     }
     virtual void set_config_dir(std::string new_path_config_dir) override
     {
-        m_path_config_dir = new_path_config_dir;
+        snprintf(m_path_config_dir, sizeof(m_path_config_dir), "%s", new_path_config_dir.c_str());
         load_config();
     }
     virtual void use_default_carts_dir() override
@@ -391,7 +391,7 @@ private:
     cart              m_cart;
     memory            m_ram;
     state             m_state;
-    u4mat2<128,128>   m_front_buffer = {};
+    // u4mat2<128,128>   m_front_buffer = {}; (Removed to save 16KB RAM)
     draw_state_t      m_front_draw_state = {};
     hw_state_t        m_front_hw_state = {};
 
@@ -400,21 +400,25 @@ private:
     bool m_pointer_locked = false;
     bool m_quit_confirmation = false;
 
-    // multiscreen - keep heap allocated (too large for DRAM: 6*16KB=96KB)
-    int m_multiscreen_current = 0;
-    int m_multiscreens_x = 1;
-    int m_multiscreens_y = 1;
-    std::vector<std::shared_ptr<u4mat2<128,128>>> m_multiscreens;
+    // Multiscreen disabled to save heap memory (~16KB per screen)
+    // Each u4mat2<128,128> = 16384 bytes, 6 screens = 98KB heap
+    // PICO-8 games rarely use multiscreen; force single-screen mode
+    // int m_multiscreen_current = 0;
+    // int m_multiscreens_x = 1;
+    // int m_multiscreens_y = 1;
+    // static constexpr int MAX_MULTISCREENS = 6;
+    // std::shared_ptr<u4mat2<128,128>> m_multiscreens[MAX_MULTISCREENS];
+    // int m_multiscreens_count = 0;
 
     bool m_in_pause = false;
 
     int         m_save_slot = 0;
-    std::string m_cartdata;
+    char        m_cartdata[1024];
     textfile    m_savefile;
     textfile    m_configfile;
 
-    std::string m_metadata_title;
-    std::string m_metadata_author;
+    char m_metadata_title[64];
+    char m_metadata_author[64];
 
     // breadcrumbs - static array to avoid heap allocation (max 8 nested LOADs)
     static constexpr int MAX_BREADCRUMBS = 8;
@@ -429,8 +433,8 @@ private:
     const int m_default_max_instructions = 300000;
     int m_max_instructions = m_default_max_instructions;
 
-    std::string m_path_active_dir;
-    std::string m_path_config_dir = "zepto-8";
+    char m_path_active_dir[128];
+    char m_path_config_dir[128];
 
     char m_ui_texts[12][32] = {
         "pause", "options", "music", "sfx", "screen",

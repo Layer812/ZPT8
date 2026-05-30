@@ -66,7 +66,7 @@ public:
 
     // Audio: queue 16-bit mono PCM samples at 22050 Hz
     // Called from PICO-8 audio callback
-    void queueAudio(const int16_t *samples, int count);
+    void queueAudio(const uint8_t *samples, int count);
 
     // Button state query (called per frame from player)
     // Returns true if the PICO-8 button btn is currently pressed

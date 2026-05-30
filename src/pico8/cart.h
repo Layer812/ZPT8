@@ -39,8 +39,9 @@ public:
     bool load_from_partition(std::string const &filename = "");
     bool save_to_partition() const;
 
-    memory const &get_rom() const { return m_rom; }
-    memory       &get_rom()       { return m_rom; }
+    using rom_t = std::array<uint8_t, 17408>;
+    rom_t const &get_rom() const { return m_rom; }
+    rom_t       &get_rom()       { return m_rom; }
 
     std::vector<uint8_t> &get_label() { return m_label; }
 
@@ -69,7 +70,7 @@ public:
     std::vector<uint8_t> get_compressed_code() const;
     std::vector<uint8_t> get_bin() const;
     bool save(std::string const &filename) const;
-    void set_from_ram(memory const &ram, int in_dst, int in_src, int in_size);
+    void set_from_ram(uint8_t const *ram, int in_dst, int in_src, int in_size);
 
     std::string preprocess_code() const;
 
@@ -85,7 +86,7 @@ private:
     void init_rom();
     void init_title();
 
-    memory               m_rom;
+    rom_t                m_rom;
     std::vector<uint8_t> m_label;
     std::string          m_lua;          
     std::string          m_filename;
