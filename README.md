@@ -1,13 +1,12 @@
-# ZPT8 (Zepto-8 Portable for M5Cardputer)
+# ZPT8PC (Zepto-8 Portable for M5Cardputer)
 
 [日本語版はこちら](README_JA.md)
 
 > **⚠️ EXPERIMENTAL / TRIAL PROJECT**  
 > This project is currently in the trial phase. It is an experimental attempt to push the M5Cardputer to its limits. **It is not a high-performance or perfect commercial product.** Expect glitches, severe slowdowns, and crashes when playing complex games.
 
-ZPT8 is a highly optimized PICO-8 fantasy console emulator tailored specifically for the M5Cardputer, built upon a customized Zepto-8 core. 
+ZPT8PC is a highly optimized PICO-8 fantasy console emulator tailored specifically for the M5Cardputer, built upon a customized Zepto-8 core. 
 
-By employing aggressive bare-metal memory hacks—including static buffer reuse, custom zero-overhead Lua memory allocators, and real-time aggressive Garbage Collection (GC)—ZPT8 shatters the restrictive 320KB RAM barrier of the ESP32-S3. This allows it to boot the system BIOS and run many PICO-8 cartridges right in the palm of your hand.<br>
 <img width="480" height="270" alt="Image" src="https://github.com/user-attachments/assets/10904ae2-a344-4af6-b236-2014e23407d8" />
 
 ---
@@ -53,18 +52,6 @@ As a **last resort for games you absolutely must play**, you can use the include
 tools/pc8_compile.exe game massive_game.p8 massive_game.pc8c
 ```
 Place the resulting `.pc8c` file on your SD card. 
-
----
-
-## ✨ Features
-
-* **Display Optimization**: Maps the native 128x128 PICO-8 canvas directly onto the center of the M5Cardputer screen with dedicated fast-path rendering utilities.
-* **Extreme Memory Footprint Reduction**: 
-  * Reuses a fixed 64KB static code buffer (BSS section) to push heap allocation overhead during cartridge swapping down to exactly **0 bytes**.
-  * Eliminates transient heap retention by stripping out standard C++ `std::string` copies.
-* **Bare-Metal Lua Allocator**: Overrides the internal quota restrictions of `z8lua`, opening up 100% of the ESP32's raw remaining free heap directly to the Lua state.
-* **Aggressive Garbage Collection**: Forces the Lua engine into a high-frequency recycling mode (`LUA_GCSETPAUSE` at 100, `LUA_GCSETSTEPMUL` at 500) to safely execute volatile processes within tight 30KB–90KB operational margins.
-* **Dedicated Audio Pipeline**: Offloads sound synthesis to Core 0 via FreeRTOS tasks, driving steady dual-buffered 11025Hz audio down-sampling without choking the main frame loop.
 
 ---
 
