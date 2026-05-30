@@ -2,10 +2,20 @@
 
 [日本語版はこちら](README_JA.md)
 
+> **⚠️ EXPERIMENTAL / TRIAL PROJECT**  
+> This project is currently in the trial phase. It is an experimental attempt to push the M5Cardputer to its limits. **It is not a high-performance or perfect commercial product.** Expect glitches, severe slowdowns, and crashes when playing complex games.
+
 ZPT8 is a highly optimized PICO-8 fantasy console emulator tailored specifically for the M5Cardputer, built upon a customized Zepto-8 core. 
 
-By employing aggressive bare-metal memory hacks—including static buffer reuse, custom zero-overhead Lua memory allocators, and real-time aggressive Garbage Collection (GC)—ZPT8 shatters the restrictive 320KB RAM barrier of the ESP32-S3. This allows it to successfully boot standalone system BIOS and run heavy, complex PICO-8 cartridges converted into the optimized `.pc8c` format right in the palm of your hand.<br>
+By employing aggressive bare-metal memory hacks—including static buffer reuse, custom zero-overhead Lua memory allocators, and real-time aggressive Garbage Collection (GC)—ZPT8 shatters the restrictive 320KB RAM barrier of the ESP32-S3. This allows it to boot the system BIOS and run many PICO-8 cartridges right in the palm of your hand.<br>
 <img width="480" height="270" alt="Image" src="https://github.com/user-attachments/assets/10904ae2-a344-4af6-b236-2014e23407d8" />
+
+---
+
+## 🛑 Hardware Limitations (Crucial)
+The M5Cardputer (ESP32-S3) has a strict **320KB SRAM (Heap Memory) limit**. PICO-8 was originally designed for PCs with abundant memory.
+- **Out of Memory (OOM) Crashes:** Large, complex games (e.g., massive RPGs or 3D games) require too much memory to compile the Lua code on-device. They will run out of memory and crash (black screen) during the loading phase.
+- **Performance Drops:** Heavy graphics will cause the frame rate to drop. We have implemented an "Auto Frameskip" feature to maintain the internal game speed, but heavy scenes will look choppy.
 
 ---
 
@@ -15,8 +25,34 @@ You can easily flash ZPT8 directly onto your M5Cardputer without installing Plat
 
 1. Open **M5Burner** on your computer.
 2. Search for the custom share code in the user-published firmware catalog:
-   * **Share Code**: `Uv0jV9Mo8hxCK7Gf`
+   * **Share Code**: `fetHO26j9cpoFzcc`
 3. Connect your M5Cardputer via USB, select your COM port, and click **Burn**!
+
+---
+
+## 📂 How to Play Games
+
+Because of the strict memory limits, **you cannot simply throw large `.p8` files onto the SD card.** You must optimize them first.
+
+### 1. Recommended Method: Minification via ShrinkO8
+For the vast majority of games, simply minifying (shrinking) the Lua code is enough to allow the Cardputer to compile and run them on-device.
+
+We highly recommend using **[ShrinkO8](https://thisismypassport.github.io/shrinko8/)** as your primary tool.
+1. Open [ShrinkO8](https://thisismypassport.github.io/shrinko8/) in your browser.
+2. Load your target `.p8` or `.p8.png` file.
+3. Click **Minify** to strip out comments, spaces, and optimize the Lua code.
+4. Save the minified `.p8` file and place it on your microSD card.
+
+### 2. The Last Resort: Precompiling via `pc8c`
+If a game is still too massive to run even after using ShrinkO8 (like *Unhaunters*), the on-device compiler will still OOM crash. 
+As a **last resort for games you absolutely must play**, you can use the included `pc8c` tool to precompile the game into bytecode (`.pc8c`) on your PC, bypassing the Cardputer's memory limits.
+
+*Note: This requires setting up the build environment (PlatformIO) as described in the "Build & Development Setup" section.*
+```bash
+# Example: Compiling a massive game on your PC
+tools/pc8_compile.exe game massive_game.p8 massive_game.pc8c
+```
+Place the resulting `.pc8c` file on your SD card. 
 
 ---
 
@@ -29,20 +65,6 @@ You can easily flash ZPT8 directly onto your M5Cardputer without installing Plat
 * **Bare-Metal Lua Allocator**: Overrides the internal quota restrictions of `z8lua`, opening up 100% of the ESP32's raw remaining free heap directly to the Lua state.
 * **Aggressive Garbage Collection**: Forces the Lua engine into a high-frequency recycling mode (`LUA_GCSETPAUSE` at 100, `LUA_GCSETSTEPMUL` at 500) to safely execute volatile processes within tight 30KB–90KB operational margins.
 * **Dedicated Audio Pipeline**: Offloads sound synthesis to Core 0 via FreeRTOS tasks, driving steady dual-buffered 11025Hz audio down-sampling without choking the main frame loop.
-
----
-
-## 📂 SD Card File Layout
-
-Structure your microSD card root directory as follows. All cartridges must be pre-compiled into the `.pc8c` binary format to allow direct flash memory mapping and ultra-low RAM overhead:
-
-```text
-SD Card Root/
-├── bios.pc8c          # System BIOS for the ZPT8 console environment
-├── jelpi.pc8c         # Default fallback/demo verification game (Recommended)
-├── 31991.pc8c         # "El Dorado" optimized binary cartridge
-└── any_other_game.pc8c # Standard games reside directly on the storage base
-```
 
 ---
 
@@ -61,12 +83,6 @@ This project relies on the following repositories:
 * **M5Unified**: [m5stack/M5Unified](https://github.com/m5stack/M5Unified) (Hardware abstraction layer for M5Stack)
 * **M5Cardputer**: [m5stack/M5Cardputer](https://github.com/m5stack/M5Cardputer) (M5Cardputer library)
 
-### Optional Tools
-* **Shrinko8**: A PICO-8 optimizer and minifier. Although not required to compile ZPT8 itself, if you need to optimize and compress your Lua code size before converting to `.pc8c`, you can clone and use Shrinko8 from the official repository:
-  ```bash
-  git clone https://github.com/thisistherong/shrinko8.git
-  ```
-
 ### Building and Uploading Firmware
 
 #### 1. Clone the Repository & Dependencies
@@ -80,16 +96,10 @@ cd ZPT8
 git clone --recursive https://github.com/samhocevar/zepto8.git zepto8
 ```
 
-
 #### 2. Import Project
 Launch VSCode and open the cloned `ZPT8` directory (containing `platformio.ini`). PlatformIO will automatically initialize.
 
 #### 3. Build and Upload Emulator to M5Cardputer
-This project targets the M5Cardputer (internally driven by M5Stack StampS3).
-* **Using VSCode GUI**:
-  1. Click the PlatformIO sidebar icon (the ant icon).
-  2. Under **Project Tasks**, navigate to `env:m5stack-stamps3` ➔ **General** ➔ **Upload** to build and flash.
-  3. Start **Monitor** under the same section to inspect debug output.
 * **Using CLI**:
   ```bash
   # Compile the code
@@ -97,9 +107,6 @@ This project targets the M5Cardputer (internally driven by M5Stack StampS3).
   
   # Compile and upload to the connected M5Cardputer
   pio run -e m5stack-stamps3 --target upload
-  
-  # Start serial monitor
-  pio run -e m5stack-stamps3 --target monitor
   ```
 
 #### 4. Build Cartridge Compiler (`pc8_compile`)
@@ -109,50 +116,6 @@ Compile the native desktop utility that converts `.p8` cartridges into the binar
   # Compile for your native desktop environment
   pio run -e native_tool
   ```
-  Once compiled, the executable binary will be generated. On Windows, locate the executable and move it to `tools/pc8_compile.exe` for convenience.
-
----
-
-## 🛠️ How to Compile Cartridges (`.p8.png` ➔ `.pc8c`)
-ZPT8 runs highly optimized `.pc8c` format cartridges from the SD card.
-Follow these steps to convert standard `.p8.png` cartridges:
-
-### Prerequisites
-* Python 3.x installed.
-* `Pillow` image library installed:
-  ```bash
-  pip install Pillow
-  ```
-
-### Step 1: Decode `.p8.png` to `.p8` Text
-Run the decoder tool `p28.py` to extract the Lua code and graphics into a plain `.p8` cartridge text file:
-```bash
-python p28.py <input_cart.p8.png> <output_cart.p8>
-```
-* **Example**:
-  ```bash
-  python p28.py jelpi.p8.png jelpi.p8
-  ```
-
-### Step 2: Compile `.p8` to `.pc8c` Binary
-Use the compiled `pc8_compile` executable to optimize and pack the code/ROM:
-
-#### Command syntax:
-```bash
-tools/pc8_compile.exe <mode> <input_cart.p8> <output_cart.pc8c>
-```
-* `<mode>`: Set to `game` for game cartridges, or `bios` for system bios cartridges.
-
-#### Example (Game):
-```bash
-tools/pc8_compile.exe game jelpi.p8 jelpi.pc8c
-```
-#### Example (BIOS):
-```bash
-tools/pc8_compile.exe bios bios.p8 bios.pc8c
-```
-
-Copy the generated `.pc8c` files onto the root directory of your microSD card.
 
 ---
 
@@ -171,13 +134,6 @@ The physical keyboard and side keys of the M5Cardputer are bound to PICO-8 Playe
 * **`↑` / `↓` Arrow Keys**: Browse up and down through the list of available files.
 * **`O` Key**: Load and automatically run (`run`) the selected cartridge.
 * **`X` Key**: Cancel selection or drop back to console.
-
----
-
-## 🔧 Troubleshooting
-
-#### Q. A cartridge crashes with an error or triggers a sudden device reset.
-A. Because the ESP32-S3 operates under highly constrained memory limits (320KB RAM), complex or resource-heavy cartridges might run out of memory. If you encounter a cartridge that crashes or resets the device, please let us know by opening a GitHub Issue (kindly and gently)! We appreciate your support in making ZPT8 better.
 
 ---
 
