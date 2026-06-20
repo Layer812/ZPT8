@@ -1,5 +1,7 @@
 # ZPT8PC (Zepto-8 Portable for M5Cardputer)
 
+[This project has been succeeded by the R8CP project / R8CPを見てね!](https://github.com/Layer812/R8CP)
+
 [日本語版はこちら](README_JA.md)
 
 > **⚠️ EXPERIMENTAL / TRIAL PROJECT**  
